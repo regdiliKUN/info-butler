@@ -1,0 +1,40 @@
+信息管家 v1.0.0 · 本地包体（单文件 EXE 版）
+
+这是一个可直接运行的本地应用包，无需联网即可使用（数据存在浏览器里）。
+
+▸ 启动应用：
+    Windows     ：双击「信息管家.exe」
+                  会弹出一个服务窗口并自动打开浏览器；用完关闭该窗口即停止服务。
+                  不依赖 Node.js / Python，任何 Windows 10/11 x64 电脑可直接运行。
+    macOS/Linux ：本包为 Windows x64 单文件版，exe 无法在 macOS/Linux 上运行；
+                  如需在 macOS/Linux 使用，可在终端执行「./start.sh」
+                  （该脚本需要系统已安装 node 或 python3）。
+
+▸ 桌面 / 开始菜单快捷方式：
+    已指向本目录下的「信息管家.exe」，双击即可启动。
+    若需重建或修复快捷方式，在本目录执行：
+        node scripts\install.js
+    快捷方式仍会指向「信息管家.exe」；右键快捷方式 →「打开文件所在位置」可直达本目录。
+
+▸ 自检（确认桌面入口确实指向本包体）：
+    node scripts\verify-package-targets.js
+    会读回桌面/开始菜单快捷方式的真实目标并判断是否落在本包体内。
+
+▸ 导入文档（设置 → 数据管理 →「导入文档」，可多选）：
+    Word   ：doc / dot / docx / docm / dotx（含 97-2003 二进制格式）
+    WPS    ：wps / wpt        RTF：rtf        ODT：odt / ott
+    表格   ：csv / tsv（自动转成表格）       网页：html / htm / xhtml
+    纯文本 ：txt / md / log / xml / srt / ini / yml 等一切文本，另有 json 备份
+    编码自动识别 UTF-8 / GBK / UTF-16；扩展名写错也能按内容识别。
+    扫描件（整页是图片）没有文字层，无法提取。
+
+▸ 数据说明：
+    记录保存在浏览器 localStorage，绑定 http://127.0.0.1:4173 这个地址。
+    换浏览器、换端口或清理浏览器数据都会导致记录不可见，
+    建议在「设置 → 数据管理」定期「导出 JSON」备份。
+
+▸ 在线版：https://info-butler-35240.app.workbuddy.host/?sharecode=2BKLJOXX4H
+
+构建时间：2026-10-22T18:21:19.951Z
+单文件 EXE 封装：2026-10-23
+平台：win32 / x64

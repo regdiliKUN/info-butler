@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# 由本地包体创建桌面 / 应用菜单快捷方式（指向本包体内 start.sh）
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT" || exit 1
+command -v node >/dev/null 2>&1 || { echo "需要 Node.js 运行环境"; exit 1; }
+node "$ROOT/scripts/install.js" --package "$ROOT"

@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>信息管家 · 个人信息管家 Agent</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+<div id="app" class="app">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">记</div>
+      <div class="brand-text">
+        <div class="brand-name">信息管家</div>
+        <div class="brand-sub">Personal Info Agent</div>
+      </div>
+    </div>
+
+    <button class="compose-btn" id="btnCompose">
+      <span class="compose-plus">+</span> 快速记录
+    </button>
+
+    <nav class="nav" id="navMain">
+      <div class="nav-label">内容</div>
+      <a class="nav-item active" data-view="stream" data-filter="all">
+        <span class="nav-ico">◎</span><span class="nav-txt">全部</span><span class="nav-count" data-count="all">0</span>
+      </a>
+      <a class="nav-item" data-view="stream" data-filter="idea">
+        <span class="nav-ico dot idea"></span><span class="nav-txt">想法</span><span class="nav-count" data-count="idea">0</span>
+      </a>
+      <a class="nav-item" data-view="stream" data-filter="material">
+        <span class="nav-ico dot material"></span><span class="nav-txt">资料</span><span class="nav-count" data-count="material">0</span>
+      </a>
+      <a class="nav-item" data-view="stream" data-filter="todo">
+        <span class="nav-ico dot todo"></span><span class="nav-txt">待办</span><span class="nav-count" data-count="todo">0</span>
+      </a>
+      <a class="nav-item" data-view="stream" data-filter="summary">
+        <span class="nav-ico dot summary"></span><span class="nav-txt">阶段总结</span><span class="nav-count" data-count="summary">0</span>
+      </a>
+      <a class="nav-item" data-view="stream" data-filter="star">
+        <span class="nav-ico">★</span><span class="nav-txt">重点</span><span class="nav-count" data-count="star">0</span>
+      </a>
+
+      <div class="nav-label">智能</div>
+      <a class="nav-item" data-view="insights">
+        <span class="nav-ico">◈</span><span class="nav-txt">洞察与总结</span>
+      </a>
+      <a class="nav-item" data-view="chat">
+        <span class="nav-ico">◐</span><span class="nav-txt">智能问答</span>
+      </a>
+      <a class="nav-item" data-view="settings">
+        <span class="nav-ico">⚙</span><span class="nav-txt">设置</span>
+      </a>
+    </nav>
+
+    <div class="tag-cloud-wrap">
+      <div class="nav-label">标签</div>
+      <div class="tag-cloud" id="tagCloud"></div>
+    </div>
+
+    <div class="sidebar-foot">
+      <div class="model-pill" id="modelPill">
+        <span class="pill-dot"></span><span id="modelPillText">本地引擎</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <main class="main">
+
+    <header class="topbar">
+      <button class="menu-btn" id="btnMenu" title="菜单" aria-label="打开导航">☰</button>
+      <div class="search-wrap">
+        <span class="search-ico">⌕</span>
+        <input id="searchInput" class="search-input" placeholder="关键词检索：支持标题、正文、标签，多个词用空格分隔" />
+        <button class="search-clear" id="searchClear" title="清除">×</button>
+      </div>
+      <div class="topbar-actions">
+        <div class="seg" id="sortSeg">
+          <button class="seg-btn active" data-sort="recent">最近</button>
+          <button class="seg-btn" data-sort="priority">优先级</button>
+          <button class="seg-btn" data-sort="relevance">相关度</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ---- 记录流 ---- -->
+    <section class="view view-stream active" id="viewStream">
+      <div class="stream-head">
+        <div>
+          <h1 class="view-title" id="streamTitle">全部内容</h1>
+          <div class="view-sub" id="streamSub">0 条记录</div>
+        </div>
+        <div class="stream-head-actions">
+          <button class="ghost-btn" id="btnAutoRelate">重新关联</button>
+          <button class="ghost-btn" id="btnExtract">提取重点</button>
+          <button class="ghost-btn primary-ghost" id="btnOrganizeTodos">整理待办</button>
+        </div>
+      </div>
+
+      <div class="filter-bar" id="filterBar">
+        <div class="chips" id="filterChips"></div>
+      </div>
+
+      <div class="card-list" id="cardList"></div>
+      <div class="empty-state" id="emptyState" hidden>
+        <div class="empty-ico">◌</div>
+        <div class="empty-title" id="emptyTitle">这里还空着</div>
+        <div class="empty-desc" id="emptyDesc">在上方输入框随手记一条，管家会自动分类、打标签并关联相关内容。</div>
+        <button class="solid-btn" id="emptyCompose">记第一条</button>
+        <button class="ghost-btn" id="emptyClear" hidden>清除筛选条件</button>
+      </div>
+    </section>
+
+    <!-- ---- 洞察与总结 ---- -->
+    <section class="view view-insights" id="viewInsights">
+      <div class="stream-head">
+        <div>
+          <h1 class="view-title">洞察与阶段总结</h1>
+          <div class="view-sub">基于已有内容自动汇总进展、识别重点，并给出下一步行动建议</div>
+        </div>
+        <div class="stream-head-actions">
+          <select id="rangeSelect" class="select">
+            <option value="7">近 7 天</option>
+            <option value="30" selected>近 30 天</option>
+            <option value="90">近 90 天</option>
+            <option value="0">全部</option>
+          </select>
+          <button class="solid-btn" id="btnGenerateSummary">生成阶段总结</button>
+        </div>
+      </div>
+
+      <div class="stat-grid" id="statGrid"></div>
+
+      <div class="panel" id="summaryPanel" hidden>
+        <div class="panel-head">
+          <div class="panel-title" id="summaryTitle">阶段总结</div>
+          <div class="panel-actions">
+            <button class="ghost-btn" id="btnSaveSummary">保存为记录</button>
+          </div>
+        </div>
+        <div class="panel-body markdown" id="summaryBody"></div>
+      </div>
+
+      <div class="insight-cols">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">主题分布</div></div>
+          <div class="panel-body" id="topicPanel"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">待办进展</div></div>
+          <div class="panel-body" id="todoPanel"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- 智能问答 ---- -->
+    <section class="view view-chat" id="viewChat">
+      <div class="stream-head">
+        <div>
+          <h1 class="view-title">智能问答</h1>
+          <div class="view-sub">先在你的记录里检索相关内容，再交给大模型作答，回答会标注引用来源</div>
+        </div>
+      </div>
+      <div class="chat-panel">
+        <div class="chat-log" id="chatLog"></div>
+        <div class="chat-suggest" id="chatSuggest"></div>
+        <div class="chat-input-wrap">
+          <textarea id="chatInput" class="chat-input" rows="2" placeholder="问问你的记录，例如：最近我在推进哪些事？有哪些还没做的？"></textarea>
+          <button class="solid-btn" id="btnAsk">提问</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- 设置 ---- -->
+    <section class="view view-settings" id="viewSettings">
+      <div class="stream-head">
+        <div>
+          <h1 class="view-title">设置</h1>
+          <div class="view-sub">配置大模型、数据与个性化偏好</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><div class="panel-title">大模型接入</div></div>
+        <div class="panel-body form">
+          <p class="hint">
+            未配置时使用内置本地引擎（离线可用，基于规则与统计算法）。配置后自动切换到大模型，分类、摘要、问答质量显著提升。
+            密钥仅保存在本机浏览器，不会上传到任何服务器。
+          </p>
+          <div class="form-row">
+            <label>服务商</label>
+            <select id="cfgProvider" class="select wide">
+              <option value="deepseek">DeepSeek</option>
+              <option value="moonshot">Moonshot / Kimi</option>
+              <option value="qwen">通义千问（DashScope 兼容）</option>
+              <option value="zhipu">智谱 GLM</option>
+              <option value="openai">OpenAI</option>
+              <option value="custom">自定义（OpenAI 兼容）</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Base URL</label>
+            <input id="cfgBaseUrl" class="input wide" placeholder="https://api.deepseek.com/v1" />
+          </div>
+          <div class="form-row">
+            <label>API Key</label>
+            <input id="cfgApiKey" class="input wide" type="password" placeholder="sk-..." />
+          </div>
+          <div class="form-row">
+            <label>模型</label>
+            <input id="cfgModel" class="input wide" placeholder="deepseek-chat" />
+          </div>
+          <div class="form-row inline">
+            <button class="solid-btn" id="btnTestModel">测试连接</button>
+            <button class="ghost-btn" id="btnClearModel">清除密钥</button>
+            <span class="test-result" id="testResult"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><div class="panel-title">数据管理</div></div>
+        <div class="panel-body form">
+          <p class="hint">数据保存在本机浏览器本地存储中。建议定期导出备份。</p>
+          <div class="form-row inline">
+            <button class="ghost-btn" id="btnExport">导出 JSON</button>
+            <button class="ghost-btn" id="btnImportDoc">导入文档</button>
+            <button class="ghost-btn" id="btnImport">导入 JSON</button>
+            <button class="ghost-btn danger" id="btnClearAll">清空全部数据</button>
+            <span class="stat-inline" id="dataStat"></span>
+          </div>
+          <input type="file" id="importFile" accept="application/json" hidden />
+          <input type="file" id="importDocFile" multiple hidden
+                 accept=".txt,.text,.log,.md,.markdown,.rst,.tex,.srt,.vtt,.ini,.cfg,.conf,.properties,.yml,.yaml,.toml,.xml,.js,.ts,.css,.py,.java,.c,.cpp,.cs,.go,.rs,.sql,.sh,.bat,.ps1,.diff,.patch,.csv,.tsv,.html,.htm,.xhtml,.rtf,.doc,.dot,.docx,.docm,.dotx,.odt,.ott,.wps,.wpt,.xls,.xlt,.et,.xlsx,.xlsm,.xltx,.xltm,.ods,.ots,.json" />
+          <p class="hint" style="margin-top:8px">「导入文档」支持 Word（doc / docx / docm / dot / dotx）、WPS（wps / wpt）、
+          RTF、ODT、网页（html）、纯文本与代码（txt / md / log / xml / srt / ini 等）、表格（csv / tsv，转成表格）、
+          Excel 电子表格（xls / xlt / et / xlsx / xlsm / xltx / xltm，多工作表转成 Markdown 表格）与 OpenDocument 表格（ods / ots），
+          以及 json 备份。
+          编码自动识别 UTF-8 / GBK / UTF-16；扩展名写错也能按内容识别（例如把 docx 存成了 .doc）。
+          扫描件（整页是图片）没有文字层，无法提取。</p>
+          <p class="hint" id="buildStamp" style="margin-top:8px">版本 v1.0.0 · 构建 2026-10-22 18:21 UTC</p>
+          <div class="form-row inline">
+            <button class="ghost-btn" id="btnSeed">载入示例数据</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><div class="panel-title">个性化</div></div>
+        <div class="panel-body form">
+          <div class="form-row">
+            <label>称呼</label>
+            <input id="cfgUserName" class="input wide" placeholder="怎么称呼你" />
+          </div>
+          <div class="form-row">
+            <label>关注领域</label>
+            <input id="cfgDomains" class="input wide" placeholder="用逗号分隔，如：产品, 投资, 学习" />
+            <span class="hint small">用于分类与标签抽取时加权</span>
+          </div>
+          <div class="form-row inline">
+            <label class="switch">
+              <input type="checkbox" id="cfgAutoTag" />
+              <span>记录时自动分类与打标签</span>
+            </label>
+          </div>
+          <div class="form-row inline">
+            <button class="solid-btn" id="btnSavePrefs">保存偏好</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============ 记录编辑器（弹层） ============ -->
+<div class="modal" id="composeModal" hidden>
+  <div class="modal-mask" data-close="1"></div>
+  <div class="modal-box compose-box">
+    <div class="modal-head">
+      <div class="modal-title">快速记录</div>
+      <button class="icon-btn" data-close="1">×</button>
+    </div>
+    <div class="modal-body">
+      <textarea id="composeText" class="compose-text" rows="6" placeholder="随手写下想法、摘录一段资料，或记录一件要做的事……（Ctrl / ⌘ + Enter 保存）"></textarea>
+      <div class="compose-meta">
+        <div class="type-picker" id="typePicker">
+          <button class="type-btn active" data-type="auto">自动识别</button>
+          <button class="type-btn" data-type="idea">想法</button>
+          <button class="type-btn" data-type="material">资料</button>
+          <button class="type-btn" data-type="todo">待办</button>
+        </div>
+        <input id="composeTags" class="input" placeholder="标签（逗号分隔，可留空由管家生成）" />
+      </div>
+      <div class="compose-status" id="composeStatus"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost-btn" data-close="1">取消</button>
+      <button class="solid-btn" id="btnSaveNote">保存并智能处理</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 详情（抽屉） ============ -->
+<div class="drawer" id="detailDrawer" hidden>
+  <div class="drawer-mask" data-close="1"></div>
+  <div class="drawer-box" id="detailBox"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="js/store.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/docimport.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

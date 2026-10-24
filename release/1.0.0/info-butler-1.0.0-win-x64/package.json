@@ -1,0 +1,30 @@
+{
+  "name": "info-butler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "个人信息管家 Agent —— 记录、自动分类、检索、问答与阶段总结",
+  "config": {
+    "appName": "信息管家",
+    "appId": "info-butler",
+    "distDir": "dist",
+    "siteDir": "info-butler",
+    "archivePrefix": "info-butler",
+    "siteEntries": ["index.html", "css", "js"],
+    "onlineUrl": "https://info-butler-35240.app.workbuddy.host/?sharecode=2BKLJOXX4H",
+    "port": 4173,
+    "packageInstallDir": "I:/WorkBuddy/info-butler-v1.0.0-win-x64"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "build:all": "node scripts/build.js --with-shortcut",
+    "verify": "node scripts/build.js --verify-only",
+    "verify:targets": "node scripts/verify-package-targets.js",
+    "shortcut": "node scripts/install.js",
+    "shortcut:remove": "node scripts/install.js --uninstall",
+    "icon": "node scripts/gen-icon.js",
+    "test:import": "node scripts/test-docimport.js",
+    "serve": "node scripts/serve.js",
+    "clean": "node scripts/build.js --clean-temp",
+    "clean:dist": "node scripts/build.js --clean-dist"
+  }
+}
