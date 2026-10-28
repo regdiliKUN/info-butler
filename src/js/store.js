@@ -395,6 +395,52 @@
       return this.notes.filter(function (n) { return (n.createdAt || 0) >= from; });
     },
 
+    /* ---------- 标签维护 ---------- */
+    /**
+     * 重命名标签。若目标标签已存在，等价于合并：
+     * 同一条记录上的两个标签会去重，不会出现「产品 产品」。
+     * @returns {number} 受影响的记录数
+     */
+    renameTag: function (from, to) {
+      var src = String(from || '').trim();
+      var dst = String(to || '').trim().slice(0, 16);
+      if (!src || !dst || src === dst) return 0;
+
+      var n = 0;
+      this.snapshot();
+      this.notes.forEach(function (note) {
+        var tags = note.tags || [];
+        if (tags.indexOf(src) < 0) return;
+        var next = [];
+        tags.forEach(function (t) {
+          var v = (t === src) ? dst : t;
+          if (next.indexOf(v) < 0) next.push(v);
+        });
+        note.tags = next.slice(0, 8);
+        note.updatedAt = Date.now();
+        n++;
+      });
+      if (n) this.saveNotes();
+      return n;
+    },
+
+    /** 删除标签（只摘掉标签，不删记录） */
+    deleteTag: function (tag) {
+      var t = String(tag || '').trim();
+      if (!t) return 0;
+      var n = 0;
+      this.snapshot();
+      this.notes.forEach(function (note) {
+        var tags = note.tags || [];
+        if (tags.indexOf(t) < 0) return;
+        note.tags = tags.filter(function (x) { return x !== t; });
+        note.updatedAt = Date.now();
+        n++;
+      });
+      if (n) this.saveNotes();
+      return n;
+    },
+
     /* ---------- 完整性修复 ---------- */
     /**
      * 读取外部数据（或历史脏数据）后做一次体检：

@@ -12,6 +12,8 @@
 </head>
 <body>
 
+<a class="skip-link" href="#cardList">跳到内容列表</a>
+
 <div id="app" class="app">
 
   <!-- ============ 侧边栏 ============ -->
@@ -28,7 +30,7 @@
       <span class="compose-plus">+</span> 快速记录
     </button>
 
-    <nav class="nav" id="navMain">
+    <nav class="nav" id="navMain" aria-label="主导航">
       <div class="nav-label">内容</div>
       <a class="nav-item active" data-view="stream" data-filter="all">
         <span class="nav-ico">◎</span><span class="nav-txt">全部</span><span class="nav-count" data-count="all">0</span>
@@ -63,7 +65,7 @@
 
     <div class="tag-cloud-wrap">
       <div class="nav-label">标签</div>
-      <div class="tag-cloud" id="tagCloud"></div>
+      <div class="tag-cloud" id="tagCloud" aria-label="标签筛选"></div>
     </div>
 
     <div class="sidebar-foot">
@@ -80,8 +82,8 @@
       <button class="menu-btn" id="btnMenu" title="菜单" aria-label="打开导航">☰</button>
       <div class="search-wrap">
         <span class="search-ico">⌕</span>
-        <input id="searchInput" class="search-input" placeholder="关键词检索：支持标题、正文、标签，多个词用空格分隔" />
-        <button class="search-clear" id="searchClear" title="清除">×</button>
+        <input id="searchInput" class="search-input" type="search" aria-label="检索记录" placeholder="关键词检索：支持标题、正文、标签，多个词用空格分隔" />
+        <button class="search-clear" id="searchClear" title="清除" aria-label="清除检索">×</button>
       </div>
       <div class="topbar-actions">
         <button class="icon-btn topbar-ico" id="btnPalette" title="命令面板（Ctrl+K）" aria-label="打开命令面板">⌘</button>
@@ -112,7 +114,7 @@
         <div class="chips" id="filterChips"></div>
       </div>
 
-      <div class="card-list" id="cardList"></div>
+      <div class="card-list" id="cardList" role="list" aria-label="记录列表"></div>
       <div class="load-more-wrap" id="loadMoreWrap" hidden>
         <button class="ghost-btn" id="btnLoadMore">继续加载</button>
         <span class="load-more-hint" id="loadMoreHint"></span>
@@ -269,6 +271,14 @@
       </div>
 
       <div class="panel">
+        <div class="panel-head"><div class="panel-title">标签管理</div></div>
+        <div class="panel-body">
+          <p class="hint">标签靠自动抽取生成，难免出现「产品」「产品思考」这类近义或错字。这里可以重命名（填已有的名字即合并）或删除。</p>
+          <div class="tag-manage" id="tagManage"></div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-head">
           <div class="panel-title">回收站</div>
           <div class="panel-actions">
@@ -331,7 +341,7 @@
 <!-- ============ 记录编辑器（弹层） ============ -->
 <div class="modal" id="composeModal" hidden>
   <div class="modal-mask" data-close="1"></div>
-  <div class="modal-box compose-box">
+  <div class="modal-box compose-box" role="dialog" aria-modal="true" aria-label="快速记录">
     <div class="modal-head">
       <div class="modal-title">快速记录</div>
       <button class="icon-btn" data-close="1">×</button>
@@ -359,10 +369,10 @@
 <!-- ============ 详情（抽屉） ============ -->
 <div class="drawer" id="detailDrawer" hidden>
   <div class="drawer-mask" data-close="1"></div>
-  <div class="drawer-box" id="detailBox"></div>
+  <div class="drawer-box" id="detailBox" role="dialog" aria-modal="true" aria-label="记录详情"></div>
 </div>
 
-<div class="toast" id="toast" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
 <!-- ============ 命令面板 ============ -->
 <div class="palette" id="palette" hidden>

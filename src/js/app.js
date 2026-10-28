@@ -375,18 +375,22 @@
         (overdue ? '已逾期 ' : '截止 ') + esc(n.dueDate) + '</span>';
     }
 
-    return '<article class="card' + (n.pinned ? ' pinned' : '') + (n.done ? ' done' : '') + '" data-id="' + n.id + '">' +
+    return '<article class="card' + (n.pinned ? ' pinned' : '') + (n.done ? ' done' : '') + '" data-id="' + n.id + '" role="listitem">' +
       '<div class="card-top">' +
       (n.type === 'todo'
-        ? '<button class="todo-check' + (n.done ? ' on' : '') + '" data-act="toggle" data-id="' + n.id + '">✓</button>'
+        ? '<button class="todo-check' + (n.done ? ' on' : '') + '" data-act="toggle" data-id="' + n.id + '"' +
+        ' role="checkbox" aria-checked="' + (n.done ? 'true' : 'false') + '"' +
+        ' aria-label="' + (n.done ? '标记为未完成' : '标记为已完成') + '">✓</button>'
         : '') +
       '<span class="type-badge ' + n.type + '">' + esc(typeLabel(n.type)) + '</span>' +
       '<span class="prio-badge ' + (n.priority || 'medium') + '">' + PRIO_LABEL[n.priority || 'medium'] + '</span>' +
       dueTag +
       '<span class="card-time">' + fmtTime(n.createdAt) + '</span>' +
-      '<button class="card-star' + (n.pinned ? ' on' : '') + '" data-act="star" data-id="' + n.id + '" title="设为重点">★</button>' +
+      '<button class="card-star' + (n.pinned ? ' on' : '') + '" data-act="star" data-id="' + n.id + '"' +
+      ' aria-pressed="' + (n.pinned ? 'true' : 'false') + '"' +
+      ' aria-label="' + (n.pinned ? '取消重点' : '设为重点') + '" title="设为重点">★</button>' +
       '</div>' +
-      '<h3 class="card-title" data-open="' + n.id + '">' + esc(n.title || '（无标题）') + '</h3>' +
+      '<button class="card-title" type="button" data-open="' + n.id + '">' + esc(n.title || '（无标题）') + '</button>' +
       '<p class="card-text">' + body + '</p>' +
       kp +
       ((n.tags || []).length
@@ -714,6 +718,25 @@
     }
 
     renderTrash();
+    renderTagManage();
+  }
+
+  function renderTagManage() {
+    var box = $('#tagManage');
+    if (!box) return;
+    var tags = Store.tagStats();
+    if (!tags.length) {
+      box.innerHTML = '<div class="trash-empty">还没有标签</div>';
+      return;
+    }
+    box.innerHTML = tags.map(function (t) {
+      return '<div class="tag-row" data-tag-row="' + esc(t.tag) + '">' +
+        '<span class="tag-row-name">#' + esc(t.tag) + '</span>' +
+        '<span class="tag-row-count">' + t.count + ' 条</span>' +
+        '<button class="mini-btn" data-tag-act="rename" data-id="' + esc(t.tag) + '">重命名</button>' +
+        '<button class="mini-btn warn" data-tag-act="delete" data-id="' + esc(t.tag) + '">删除</button>' +
+        '</div>';
+    }).join('');
   }
 
   function renderTrash() {
@@ -735,6 +758,61 @@
         '<button class="mini-btn warn" data-trash-act="purge" data-id="' + esc(n.id) + '">彻底删除</button>' +
         '</div>';
     }).join('');
+  }
+
+  /* ---------------- 无障碍：焦点管理 ---------------- */
+
+  var LAYER_IDS = ['palette', 'composeModal', 'detailDrawer'];
+  var FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+  function visibleLayer() {
+    for (var i = 0; i < LAYER_IDS.length; i++) {
+      var el = document.getElementById(LAYER_IDS[i]);
+      if (el && !el.hidden) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Tab 键在弹层内循环。
+   * 不做这件事的话，键盘用户 Tab 几下就跑到背后的页面上去了，
+   * 视觉上还停在弹层里，很容易误操作。
+   */
+  function trapTab(e) {
+    var layer = visibleLayer();
+    if (!layer || e.key !== 'Tab') return;
+    var items = Array.prototype.filter.call(layer.querySelectorAll(FOCUSABLE), function (el) {
+      return el.offsetParent !== null;
+    });
+    if (!items.length) return;
+    var first = items[0], last = items[items.length - 1];
+    var cur = document.activeElement;
+
+    if (e.shiftKey) {
+      if (cur === first || !layer.contains(cur)) { e.preventDefault(); last.focus(); }
+    } else if (cur === last || !layer.contains(cur)) {
+      e.preventDefault(); first.focus();
+    }
+  }
+
+  /** 监听各层的 hidden 变化：打开时把焦点送进去，关闭时还回原来的位置 */
+  function initLayerFocus() {
+    var lastFocus = null;
+    LAYER_IDS.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el || !window.MutationObserver) return;
+      new MutationObserver(function () {
+        if (!el.hidden) {
+          lastFocus = document.activeElement;
+          var f = el.querySelector(FOCUSABLE);
+          if (f) setTimeout(function () { if (!el.hidden) f.focus(); }, 30);
+        } else if (lastFocus && lastFocus !== document.body && lastFocus.focus) {
+          var back = lastFocus;
+          lastFocus = null;
+          try { back.focus(); } catch (err) { /* 元素可能已被重渲染移除 */ }
+        }
+      }).observe(el, { attributes: true, attributeFilter: ['hidden'] });
+    });
   }
 
   /* ---------------- 下载 ---------------- */
@@ -1365,6 +1443,36 @@
       });
     });
 
+    // 标签管理
+    $('#tagManage').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-tag-act]');
+      if (!btn) return;
+      var tag = btn.getAttribute('data-id');
+      var act = btn.getAttribute('data-tag-act');
+
+      if (act === 'rename') {
+        var to = window.prompt('把标签「' + tag + '」改成（填一个已存在的标签即合并）：', tag);
+        if (to == null) return;
+        to = String(to).trim();
+        if (!to || to === tag) return;
+        var n = Store.renameTag(tag, to);
+        // 当前筛选里如果还挂着重命名前的标签，跟着换掉，否则会筛出空列表
+        var idx = state.tags.indexOf(tag);
+        if (idx >= 0) state.tags[idx] = to;
+        renderAll(); fillSettings();
+        toast(n ? ('已更新 ' + n + ' 条记录的标签') : '没有记录使用这个标签');
+        return;
+      }
+
+      if (act === 'delete') {
+        if (!confirm('删除标签「' + tag + '」？只摘掉标签，记录本身不会删除。')) return;
+        var m = Store.deleteTag(tag);
+        state.tags = state.tags.filter(function (x) { return x !== tag; });
+        renderAll(); fillSettings();
+        toast('已从 ' + m + ' 条记录上移除该标签');
+      }
+    });
+
     // 回收站
     $('#trashList').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-trash-act]');
@@ -1526,6 +1634,8 @@
       if (c.closest('#detailDrawer')) $('#detailDrawer').hidden = true;
     });
     document.addEventListener('keydown', function (e) {
+      if (e.key === 'Tab') trapTab(e);
+
       if (e.key === 'Escape') {
         if (!$('#palette').hidden) { closePalette(); return; }
         $('#composeModal').hidden = true;
@@ -1684,6 +1794,7 @@
       else if (mq.addListener) mq.addListener(onChange);
     }
     bind();
+    initLayerFocus();
     renderSuggest();
     renderAll();
 

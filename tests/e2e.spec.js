@@ -294,6 +294,47 @@ async function waitServer(url, timeoutMs = 15000) {
       await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length > 60, null, { timeout: 4000 });
     });
 
+    await check('Tab 焦点被困在弹层内，关闭后归还', async () => {
+      await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');
+      const opener = page.locator('#cardList .card .card-title').first();
+      await opener.focus();
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('#detailDrawer:not([hidden])');
+      // 连续 Tab 20 次，焦点不应跑到弹层外
+      let escaped = false;
+      for (let i = 0; i < 20; i++) {
+        await page.keyboard.press('Tab');
+        const inside = await page.evaluate(() => {
+          const d = document.querySelector('#detailDrawer');
+          return d.contains(document.activeElement);
+        });
+        if (!inside) { escaped = true; break; }
+      }
+      assert(!escaped, '焦点跑出了抽屉');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#detailDrawer[hidden]', { state: 'attached' });
+      const back = await page.evaluate(() => document.activeElement && document.activeElement.className);
+      assert(/card-title/.test(back || ''), '关闭后焦点应回到触发元素，实际：' + back);
+    });
+
+    await check('关键控件具备可读的无障碍名称', async () => {
+      const bad = await page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('button').forEach((b) => {
+          if (b.offsetParent === null) return;
+          const name = (b.getAttribute('aria-label') || b.textContent || '').trim();
+          if (!name) out.push(b.id || b.className || b.outerHTML.slice(0, 60));
+        });
+        return out;
+      });
+      assert(bad.length === 0, '这些按钮没有可读名称：' + bad.join(' | '));
+    });
+
+    await check('存在跳到内容的跳转链接', async () => {
+      const href = await page.getAttribute('.skip-link', 'href');
+      assert(href === '#cardList', '跳转链接应指向内容区，实际 ' + href);
+    });
+
     if (WANT_SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');

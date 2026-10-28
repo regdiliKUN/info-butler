@@ -206,6 +206,44 @@ test('clearAll 后仍可撤销', () => {
   assert.strictEqual(S.all().length, 2, '清空应可撤销');
 });
 
+test('renameTag 重命名并去重同记录上的重复标签', () => {
+  const sb = fresh();
+  const S = sb.Store;
+  const a = S.add({ content: '甲', tags: ['产品', '思考'] });
+  const b = S.add({ content: '乙', tags: ['产品思考'] });
+  const n = S.renameTag('产品思考', '产品');
+  assert.strictEqual(n, 1, '应影响 1 条记录');
+  assert.strictEqual(Array.from(S.get(b.id).tags).join(','), '产品');
+  assert.strictEqual(Array.from(S.get(a.id).tags).join(','), '产品,思考');
+});
+
+test('renameTag 合并时不会在一条记录上留下重复标签', () => {
+  const sb = fresh();
+  const S = sb.Store;
+  const a = S.add({ content: '甲', tags: ['产品', '产品思考'] });
+  S.renameTag('产品思考', '产品');
+  assert.strictEqual(Array.from(S.get(a.id).tags).join(','), '产品', '应去重为单个标签');
+});
+
+test('renameTag 对不存在的标签返回 0 且不改动数据', () => {
+  const sb = fresh();
+  const S = sb.Store;
+  S.add({ content: '甲', tags: ['产品'] });
+  assert.strictEqual(S.renameTag('不存在', '产品'), 0);
+  assert.strictEqual(S.renameTag('产品', '产品'), 0, '同名应为空操作');
+});
+
+test('deleteTag 只摘标签不删记录', () => {
+  const sb = fresh();
+  const S = sb.Store;
+  S.add({ content: '甲', tags: ['产品', '思考'] });
+  S.add({ content: '乙', tags: ['产品'] });
+  const n = S.deleteTag('产品');
+  assert.strictEqual(n, 2);
+  assert.strictEqual(S.all().length, 2, '记录不应被删除');
+  assert.ok(S.all().every((x) => Array.from(x.tags).indexOf('产品') < 0));
+});
+
 test('seed 生成示例数据并写入标题与要点', () => {
   const sb = fresh();
   const S = sb.Store;
