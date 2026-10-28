@@ -84,6 +84,8 @@
         <button class="search-clear" id="searchClear" title="清除">×</button>
       </div>
       <div class="topbar-actions">
+        <button class="icon-btn topbar-ico" id="btnPalette" title="命令面板（Ctrl+K）" aria-label="打开命令面板">⌘</button>
+        <button class="icon-btn topbar-ico" id="btnTheme" title="切换深浅色" aria-label="切换深浅色主题">◐</button>
         <div class="seg" id="sortSeg">
           <button class="seg-btn active" data-sort="recent">最近</button>
           <button class="seg-btn" data-sort="priority">优先级</button>
@@ -293,6 +295,26 @@
               <span>记录时自动分类与打标签</span>
             </label>
           </div>
+          <div class="form-row">
+            <label>主题</label>
+            <select id="cfgTheme" class="select wide">
+              <option value="auto">跟随系统</option>
+              <option value="dark">深色</option>
+              <option value="light">浅色</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>信息密度</label>
+            <select id="cfgDensity" class="select wide">
+              <option value="cozy">舒适</option>
+              <option value="compact">紧凑</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>正文字号</label>
+            <input type="range" id="cfgFontSize" min="13" max="18" step="1" class="range wide" />
+            <span class="hint small" id="fontSizeLabel">14 px</span>
+          </div>
           <div class="form-row inline">
             <button class="solid-btn" id="btnSavePrefs">保存偏好</button>
           </div>
@@ -337,6 +359,18 @@
 </div>
 
 <div class="toast" id="toast" hidden></div>
+
+<!-- ============ 命令面板 ============ -->
+<div class="palette" id="palette" hidden>
+  <div class="modal-mask" data-close="1"></div>
+  <div class="palette-box" role="dialog" aria-modal="true" aria-label="命令面板">
+    <input id="paletteInput" class="palette-input" autocomplete="off" spellcheck="false"
+           placeholder="搜索记录，或输入命令（如「新建」「导出」「浅色」）…"
+           aria-label="命令输入" />
+    <div class="palette-list" id="paletteList" role="listbox"></div>
+    <div class="palette-foot">↑ ↓ 选择　Enter 执行　Esc 关闭　Ctrl/⌘ + K 随时唤起</div>
+  </div>
+</div>
 
 <script src="js/store.js"></script>
 <script src="js/engine.js"></script>

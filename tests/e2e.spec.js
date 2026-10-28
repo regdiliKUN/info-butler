@@ -226,6 +226,48 @@ async function waitServer(url, timeoutMs = 15000) {
       assert(trash.length > 0, '回收站区域应有内容');
     });
 
+    await check('Ctrl+K 打开命令面板并能搜到记录', async () => {
+      await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');
+      await page.keyboard.press('Control+k');
+      await page.waitForSelector('#palette:not([hidden])');
+      await page.fill('#paletteInput', '路线图');
+      await page.waitForFunction(() => document.querySelectorAll('#paletteList .palette-item').length >= 1, null, { timeout: 3000 });
+      const first = await page.textContent('#paletteList .palette-item');
+      assert(/路线图/.test(first), '命令面板应能搜到记录，实际：' + first);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#palette[hidden]', { state: 'attached' });
+    });
+
+    await check('命令面板可切换主题并生效', async () => {
+      await page.keyboard.press('Control+k');
+      await page.waitForSelector('#palette:not([hidden])', { timeout: 3000 });
+      await page.fill('#paletteInput', '浅色');
+      await page.waitForFunction(() => {
+        const it = document.querySelector('#paletteList .palette-item');
+        return it && /切换深色/.test(it.textContent);
+      }, null, { timeout: 3000 });
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light', null, { timeout: 3000 });
+      const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+      assert(bg !== 'rgb(14, 17, 22)', '浅色主题下背景应变亮，实际 ' + bg);
+    });
+
+    await check('浅色主题下无深色残留块', async () => {
+      // 侧边栏、卡片、设置面板是最容易被漏掉的三个面
+      const bad = await page.evaluate(() => {
+        const pick = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          const m = getComputedStyle(el).backgroundColor.match(/\d+/g);
+          return m ? Number(m[0]) + Number(m[1]) + Number(m[2]) : null;
+        };
+        return { sidebar: pick('.sidebar'), card: pick('.card'), panel: pick('.panel') };
+      });
+      Object.keys(bad).forEach((k) => {
+        if (bad[k] != null) assert(bad[k] > 300, k + ' 仍是深色（RGB 和 ' + bad[k] + '）');
+      });
+    });
+
     if (WANT_SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');

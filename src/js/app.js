@@ -658,6 +658,13 @@
     $('#cfgUserName').value = c.userName || '';
     $('#cfgDomains').value = c.domains || '';
     $('#cfgAutoTag').checked = !!c.autoTag;
+    if ($('#cfgTheme')) $('#cfgTheme').value = c.theme || 'auto';
+    if ($('#cfgDensity')) $('#cfgDensity').value = c.density || 'cozy';
+    if ($('#cfgFontSize')) {
+      var fs = Number(c.fontSize) || 14;
+      $('#cfgFontSize').value = fs;
+      $('#fontSizeLabel').textContent = fs + ' px';
+    }
 
     var total = Store.all().length;
     var used = Store.estimateBytes();
@@ -700,6 +707,243 @@
     }).join('');
   }
 
+  /* ---------------- 下载 ---------------- */
+
+  /** 触发一次文件下载。放模块级是因为命令面板也要用（它不在 bind 的作用域里）。 */
+  function download(text, filename, mime) {
+    var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // 立刻 revoke 会让部分浏览器的下载中断，延后释放
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+  }
+
+  /* ---------------- 主题 / 密度 / 字号 ---------------- */
+
+  /**
+   * 主题落地。'auto' 交给系统偏好，其余按用户选择。
+   * 三个维度（主题 / 密度 / 字号）都写成 <html> 上的属性或 CSS 变量，
+   * 这样样式表只需要关心变量，不必为每种组合写一套规则。
+   */
+  function applyTheme() {
+    var c = Store.config || {};
+    var theme = c.theme || 'auto';
+    var resolved = theme;
+    if (theme === 'auto') {
+      resolved = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-density', c.density === 'compact' ? 'compact' : 'cozy');
+    document.documentElement.style.setProperty('--base-font', (Number(c.fontSize) || 14) + 'px');
+
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', resolved === 'light' ? '#f6f7fa' : '#0e1116');
+
+    var btn = $('#btnTheme');
+    if (btn) {
+      btn.textContent = resolved === 'light' ? '☀' : '☾';
+      btn.title = resolved === 'light' ? '切换到深色' : '切换到浅色';
+    }
+  }
+
+  /** 一键切换深浅色：直接落到具体主题，不再绕回 auto，符合"我看到什么就切什么"的直觉 */
+  function toggleTheme() {
+    var cur = document.documentElement.getAttribute('data-theme');
+    Store.config.theme = cur === 'light' ? 'dark' : 'light';
+    Store.saveConfig();
+    applyTheme();
+    var sel = $('#cfgTheme');
+    if (sel) sel.value = Store.config.theme;
+  }
+
+  /* ---------------- 命令面板 ---------------- */
+
+  var palette = { items: [], idx: 0 };
+
+  function paletteCommands() {
+    return [
+      { ico: '+', label: '新建记录', hint: 'N', kw: 'new compose 记录 新建', run: function () { openCompose(); } },
+      { ico: '⌕', label: '搜索记录', hint: '/', kw: 'search 查找 检索', run: function () { $('#searchInput').focus(); } },
+      { ico: '◎', label: '查看全部内容', kw: 'all 全部', run: function () { switchView('stream', 'all'); } },
+      { ico: '·', label: '查看想法', kw: 'idea 想法', run: function () { switchView('stream', 'idea'); } },
+      { ico: '·', label: '查看资料', kw: 'material 资料', run: function () { switchView('stream', 'material'); } },
+      { ico: '·', label: '查看待办', kw: 'todo 待办 任务', run: function () { switchView('stream', 'todo'); } },
+      { ico: '·', label: '查看阶段总结', kw: 'summary 总结', run: function () { switchView('stream', 'summary'); } },
+      { ico: '★', label: '查看重点', kw: 'star 重点 收藏', run: function () { switchView('stream', 'star'); } },
+      { ico: '◈', label: '打开洞察与总结', kw: 'insight 洞察 统计', run: function () { switchView('insights'); } },
+      { ico: '◐', label: '打开智能问答', kw: 'chat ask 问答', run: function () { switchView('chat'); } },
+      { ico: '⚙', label: '打开设置', kw: 'settings 设置 配置', run: function () { switchView('settings'); } },
+      {
+        ico: '◑', label: '切换深色 / 浅色', kw: 'theme 主题 深色 浅色 dark light',
+        run: toggleTheme
+      },
+      {
+        ico: '↓', label: '导出 JSON 备份', kw: 'export backup 导出 备份',
+        run: function () { download(Store.exportJSON(), '信息管家备份-' + Engine.todayStr() + '.json', 'application/json'); toast('已导出 JSON 备份'); }
+      },
+      {
+        ico: '↓', label: '导出 Markdown', kw: 'export md 导出',
+        run: function () {
+          if (!Store.all().length) { toast('还没有记录可导出'); return; }
+          download(Store.exportMarkdown(), '信息管家-' + Engine.todayStr() + '.md', 'text/markdown;charset=utf-8');
+          toast('已导出 Markdown');
+        }
+      },
+      {
+        ico: '↓', label: '导出 CSV', kw: 'export csv 导出 表格',
+        run: function () {
+          if (!Store.all().length) { toast('还没有记录可导出'); return; }
+          download(Store.exportCSV(), '信息管家-' + Engine.todayStr() + '.csv', 'text/csv;charset=utf-8');
+          toast('已导出 CSV');
+        }
+      },
+      {
+        ico: '◇', label: '生成阶段总结', kw: 'summary 总结 阶段',
+        run: function () { switchView('insights'); setTimeout(function () { $('#btnGenerateSummary').click(); }, 60); }
+      },
+      {
+        ico: '✓', label: '整理待办', kw: 'todo 整理 待办',
+        run: function () { switchView('stream', 'all'); setTimeout(function () { $('#btnOrganizeTodos').click(); }, 60); }
+      },
+      {
+        ico: '◆', label: '重新计算关联', kw: 'relate 关联',
+        run: function () {
+          Engine.relate(Store.all());
+          Store.saveNotes();
+          renderAll();
+          toast('已重新计算关联');
+        }
+      },
+      {
+        ico: '↺', label: '撤销上一步', hint: 'Ctrl+Z', kw: 'undo 撤销',
+        run: function () {
+          if (!Store.canUndo()) { toast('没有可撤销的操作'); return; }
+          Store.undo();
+          Engine.relate(Store.all());
+          Store.saveNotes();
+          renderAll();
+          fillSettings();
+          toast('已撤销上一步');
+        }
+      },
+      {
+        ico: '♻', label: '打开回收站', kw: 'trash 回收站 删除',
+        run: function () {
+          switchView('settings');
+          setTimeout(function () {
+            var el = $('#trashList');
+            if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }, 80);
+        }
+      },
+      {
+        ico: '?', label: '查看快捷键', kw: 'help shortcut 快捷键 帮助',
+        run: function () { openPalette('快捷键'); }
+      }
+    ];
+  }
+
+  function paletteResults(q) {
+    var query = String(q || '').trim();
+    var cmds = paletteCommands();
+    if (!query) return cmds.slice(0, 10);
+
+    var out = cmds.filter(function (c) {
+      return c.label.indexOf(query) >= 0 || (c.kw || '').indexOf(query) >= 0;
+    });
+
+    // 命令之外也直接搜记录：用户按 Ctrl+K 时往往就是想找某条笔记
+    if (Store.all().length) {
+      var hits = Engine.search(Store.all(), query).slice(0, 8);
+      hits.forEach(function (h) {
+        out.push({
+          ico: '·',
+          label: h.note.title || '（无标题）',
+          hint: typeLabel(h.note.type),
+          run: function () { openDetail(h.note.id); }
+        });
+      });
+    }
+    return out.slice(0, 14);
+  }
+
+  function renderPalette() {
+    var q = $('#paletteInput').value;
+    palette.items = paletteResults(q);
+    if (palette.idx >= palette.items.length) palette.idx = 0;
+    var box = $('#paletteList');
+    if (!palette.items.length) {
+      box.innerHTML = '<div class="palette-empty">没有匹配的命令或记录</div>';
+      return;
+    }
+    box.innerHTML = palette.items.map(function (c, i) {
+      return '<button class="palette-item' + (i === palette.idx ? ' on' : '') + '" data-pi="' + i + '" role="option">' +
+        '<span class="pi-ico">' + esc(c.ico || '·') + '</span>' +
+        '<span class="pi-label">' + esc(c.label) + '</span>' +
+        (c.hint ? '<span class="pi-hint">' + esc(c.hint) + '</span>' : '') +
+        '</button>';
+    }).join('');
+  }
+
+  function openPalette(prefill) {
+    $('#palette').hidden = false;
+    var inp = $('#paletteInput');
+    inp.value = prefill || '';
+    palette.idx = 0;
+    renderPalette();
+    setTimeout(function () { inp.focus(); inp.select(); }, 0);
+  }
+
+  function closePalette() {
+    $('#palette').hidden = true;
+  }
+
+  function runPaletteItem(i) {
+    var c = palette.items[i];
+    if (!c) return;
+    closePalette();
+    // 命令内部可能又要开面板（如"查看快捷键"），放到下一帧避免刚关又被同一个 Esc 关掉
+    setTimeout(function () { c.run(); }, 0);
+  }
+
+  function initPalette() {
+    var inp = $('#paletteInput');
+    inp.addEventListener('input', function () { palette.idx = 0; renderPalette(); });
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        palette.idx = Math.min(palette.idx + 1, palette.items.length - 1);
+        renderPalette();
+        scrollPaletteIntoView();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        palette.idx = Math.max(palette.idx - 1, 0);
+        renderPalette();
+        scrollPaletteIntoView();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        runPaletteItem(palette.idx);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closePalette();
+      }
+    });
+    $('#paletteList').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-pi]');
+      if (btn) runPaletteItem(Number(btn.getAttribute('data-pi')));
+    });
+    $('#btnPalette').addEventListener('click', function () { openPalette(); });
+  }
+
+  function scrollPaletteIntoView() {
+    var el = $('#paletteList .palette-item.on');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+
   function readSettings() {
     Store.config.provider = $('#cfgProvider').value;
     Store.config.baseUrl = $('#cfgBaseUrl').value.trim();
@@ -708,7 +952,11 @@
     Store.config.userName = $('#cfgUserName').value.trim();
     Store.config.domains = $('#cfgDomains').value.trim();
     Store.config.autoTag = $('#cfgAutoTag').checked;
+    if ($('#cfgTheme')) Store.config.theme = $('#cfgTheme').value;
+    if ($('#cfgDensity')) Store.config.density = $('#cfgDensity').value;
+    if ($('#cfgFontSize')) Store.config.fontSize = Number($('#cfgFontSize').value) || 14;
     Store.saveConfig();
+    applyTheme();
   }
 
   /* ---------------- 批处理动作 ---------------- */
@@ -1018,19 +1266,19 @@
     $('#cfgDomains').addEventListener('change', readSettings);
     $('#cfgAutoTag').addEventListener('change', readSettings);
 
-    // 数据
-    function download(text, filename, mime) {
-      var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // 立刻 revoke 会让部分浏览器的下载中断，延后释放
-      setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
-    }
+    // 外观：三个控件都即时生效，不需要再点"保存"
+    $('#btnTheme').addEventListener('click', toggleTheme);
+    $('#cfgTheme').addEventListener('change', function () { readSettings(); toast('主题已更新'); });
+    $('#cfgDensity').addEventListener('change', function () { readSettings(); });
+    $('#cfgFontSize').addEventListener('input', function () {
+      $('#fontSizeLabel').textContent = $('#cfgFontSize').value + ' px';
+      readSettings();
+    });
 
+    // 命令面板
+    initPalette();
+
+    // 数据
     $('#btnExport').addEventListener('click', function () {
       download(Store.exportJSON(), '信息管家备份-' + Engine.todayStr() + '.json', 'application/json');
       toast('已导出 JSON 备份');
@@ -1238,14 +1486,28 @@
     });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
+        if (!$('#palette').hidden) { closePalette(); return; }
         $('#composeModal').hidden = true;
         $('#detailDrawer').hidden = true;
+        return;
       }
+
+      var tag = (e.target && e.target.tagName) || '';
+      var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable);
+      var mod = e.ctrlKey || e.metaKey;
+
+      // Ctrl/⌘ + K：命令面板。输入框里也要生效——这是全局入口，不是编辑器快捷键。
+      if (mod && String(e.key).toLowerCase() === 'k') {
+        e.preventDefault();
+        if ($('#palette').hidden) openPalette(); else closePalette();
+        return;
+      }
+
+      if (typing) return;
+
       // Ctrl/⌘ + Z 撤销最近一次增删改。
       // 在输入框里要放行浏览器自带的文本撤销，否则打字时按 Ctrl+Z 会误删记录。
-      var tag = (e.target && e.target.tagName) || '';
-      var typing = /^(INPUT|TEXTAREA)$/.test(tag) || (e.target && e.target.isContentEditable);
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && String(e.key).toLowerCase() === 'z' && !typing) {
+      if (mod && !e.shiftKey && String(e.key).toLowerCase() === 'z') {
         if (Store.canUndo()) {
           e.preventDefault();
           Store.undo();
@@ -1255,7 +1517,15 @@
           fillSettings();
           toast('已撤销上一步');
         }
+        return;
       }
+
+      if (mod || e.altKey) return;
+
+      // 单键快捷键：/ 搜索、n 新建、? 命令面板（已输入 ? 时顺带展示快捷键）
+      if (e.key === '/') { e.preventDefault(); $('#searchInput').focus(); return; }
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openCompose(); return; }
+      if (e.key === '?') { e.preventDefault(); openPalette('快捷键'); }
     });
   }
 
@@ -1360,6 +1630,17 @@
     Store.load();
     Engine.relate(Store.all());
     Store.saveNotes();
+    applyTheme();
+
+    // 跟随系统时，系统切主题要立刻反映过来，否则要刷新才生效
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      var onChange = function () {
+        if ((Store.config.theme || 'auto') === 'auto') applyTheme();
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
     bind();
     renderSuggest();
     renderAll();
