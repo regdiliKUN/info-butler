@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装依赖
+        run: npm ci || npm install
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 安装 Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: 端到端测试
+        run: npm run test:e2e
+
+      - name: 上传失败截图
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: docs/screenshots/
+          if-no-files-found: ignore
+
+  build-exe:
+    # exe 只能在 Windows 上产出；测试先跑通再打包
+    needs: test
+    runs-on: windows-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装依赖
+        run: npm ci || npm install
+
+      - name: 打包单文件 exe
+        run: npm run build:exe
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: info-butler-exe
+          path: dist/信息管家.exe
+          if-no-files-found: error

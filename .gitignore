@@ -2,7 +2,14 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# 构建产物（npm run build:exe 生成）
 dist/
+build/
+
+# 本地发布目录副本
 release/
+
+# 测试截图
 docs/screenshots/*.png
 !docs/screenshots/.gitkeep

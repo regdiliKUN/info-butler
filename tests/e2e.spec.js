@@ -23,8 +23,26 @@ const CHROME_CANDIDATES = [
 ].filter(Boolean);
 
 function findChrome() {
+  // 优先问 Playwright 自己：CI 里 `npx playwright install chromium` 装好的路径它能直接给出
+  try {
+    const p = chromium.executablePath();
+    if (p && fs.existsSync(p)) return p;
+  } catch (e) { /* 没装浏览器时继续走下面的兜底 */ }
+
   for (const p of CHROME_CANDIDATES) if (fs.existsSync(p)) return p;
-  throw new Error('找不到 Chromium/Chrome，可设置 CHROME_PATH 环境变量');
+
+  // 兜底：在 ms-playwright 目录里找任意版本的 chromium
+  const base = path.join(os.homedir(), 'AppData', 'Local', 'ms-playwright');
+  if (fs.existsSync(base)) {
+    for (const dir of fs.readdirSync(base)) {
+      if (!dir.startsWith('chromium-')) continue;
+      for (const rel of ['chrome-win64/chrome.exe', 'chrome-win/chrome.exe', 'chrome-linux/chrome']) {
+        const full = path.join(base, dir, rel);
+        if (fs.existsSync(full)) return full;
+      }
+    }
+  }
+  throw new Error('找不到 Chromium/Chrome，可执行 `npx playwright install chromium` 或设置 CHROME_PATH');
 }
 
 const results = [];
@@ -239,14 +257,17 @@ async function waitServer(url, timeoutMs = 15000) {
     });
 
     await check('命令面板可切换主题并生效', async () => {
-      await page.keyboard.press('Control+k');
+      // 用顶栏按钮打开而不是 Ctrl+K：Ctrl+K 是「切换」语义，
+      // 上一步如果没关干净就会变成"关掉"，测试会偶发失败。
+      await page.evaluate(() => { document.querySelector('#palette').hidden = true; });
+      await page.click('#btnPalette');
       await page.waitForSelector('#palette:not([hidden])', { timeout: 3000 });
       await page.fill('#paletteInput', '浅色');
       await page.waitForFunction(() => {
         const it = document.querySelector('#paletteList .palette-item');
         return it && /切换深色/.test(it.textContent);
       }, null, { timeout: 3000 });
-      await page.keyboard.press('Enter');
+      await page.click('#paletteList .palette-item');
       await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light', null, { timeout: 3000 });
       const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
       assert(bg !== 'rgb(14, 17, 22)', '浅色主题下背景应变亮，实际 ' + bg);
