@@ -268,6 +268,32 @@ async function waitServer(url, timeoutMs = 15000) {
       });
     });
 
+    await check('大列表分批渲染，不会一次塞满 DOM', async () => {
+      await page.evaluate(() => {
+        const now = Date.now();
+        const arr = [];
+        for (let i = 0; i < 150; i++) {
+          arr.push({
+            id: 'bulk_' + i, type: i % 2 ? 'idea' : 'material',
+            title: '批量记录 ' + i, content: '批量记录 ' + i + ' 的正文内容，用于验证分批渲染。',
+            tags: ['批量'], priority: 'medium', dueDate: null, done: false, doneAt: null,
+            pinned: false, summary: '', keyPoints: [], related: [],
+            createdAt: now - i * 60000, updatedAt: now - i * 60000
+          });
+        }
+        Store.notes = arr.concat(Store.all());
+        Store._index = null;
+        Store.saveNotes();
+        window.__infoButler.switchView('stream', 'all');
+      });
+      await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length === 60, null, { timeout: 5000 });
+      assert(await page.isVisible('#loadMoreWrap'), '应显示「继续加载」');
+      const hint = await page.textContent('#loadMoreHint');
+      assert(/60 \/ 15[0-9]/.test(hint), '应显示进度，实际：' + hint);
+      await page.click('#btnLoadMore');
+      await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length > 60, null, { timeout: 4000 });
+    });
+
     if (WANT_SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');

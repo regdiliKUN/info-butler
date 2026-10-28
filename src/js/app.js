@@ -20,8 +20,11 @@
     sort: 'recent',
     onlyOpen: false,
     editingId: null,
-    lastSummary: null
+    lastSummary: null,
+    limit: 60           // 列表一次渲染多少条；2000 条全量塞进 DOM 会明显拖慢滚动
   };
+
+  var PAGE_SIZE = 60;
 
   var chatHistory = [];
 
@@ -255,6 +258,7 @@
   /** 统一切换排序方式，按钮高亮与状态只在这里维护，避免多处各改一半 */
   function setSort(sort) {
     state.sort = sort;
+    state.limit = PAGE_SIZE;
     $$('#sortSeg .seg-btn').forEach(function (b) {
       b.classList.toggle('active', b.getAttribute('data-sort') === sort);
     });
@@ -285,12 +289,37 @@
     $('#filterChips').innerHTML = chips.join('');
 
     var scoreMap = list._score || {};
+    var shown = list.slice(0, state.limit);
 
-    $('#cardList').innerHTML = list.map(function (n) {
+    $('#cardList').innerHTML = shown.map(function (n) {
       return cardHTML(n, scoreMap[n.id]);
     }).join('');
 
+    renderLoadMore(list.length, shown.length);
     renderEmptyState(list.length);
+  }
+
+  /** 分批渲染的"继续加载"。列表很长时，滚动到底部自动补一屏 */
+  function renderLoadMore(total, shown) {
+    var wrap = $('#loadMoreWrap');
+    if (!wrap) return;
+    if (shown >= total) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    $('#loadMoreHint').textContent = '已显示 ' + shown + ' / ' + total + ' 条';
+  }
+
+  function loadMore() {
+    if (!state.view || state.view !== 'stream') return;
+    var before = state.limit;
+    state.limit += PAGE_SIZE;
+    renderStream();
+    // 触发后仍在可视区（记录不够多）时继续补，避免"点了没反应"
+    if (state.limit !== before && state.limit < Store.all().length + PAGE_SIZE) {
+      requestAnimationFrame(function () {
+        var wrap = $('#loadMoreWrap');
+        if (wrap && !wrap.hidden && wrap.getBoundingClientRect().top < window.innerHeight) loadMore();
+      });
+    }
   }
 
   /** 空态要区分「本来就没记录」和「筛选后没命中」，否则用户会以为数据丢了 */
@@ -308,6 +337,7 @@
   }
 
   function clearFilters() {
+    state.limit = PAGE_SIZE;
     state.query = '';
     state.tags = [];
     state.onlyOpen = false;
@@ -1094,6 +1124,7 @@
 
   function switchView(view, filter) {
     state.view = view;
+    state.limit = PAGE_SIZE;
     if (filter) state.filter = filter;
     $$('.view').forEach(function (v) { v.classList.remove('active'); });
     var map = { stream: '#viewStream', insights: '#viewInsights', chat: '#viewChat', settings: '#viewSettings' };
@@ -1126,6 +1157,7 @@
     var searchTimer = null;
     var applyQuery = function (v) {
       state.query = v;
+      state.limit = PAGE_SIZE;        // 换关键词后重新从第一页看起
       if (state.view !== 'stream') switchView('stream', state.filter);
       else renderStream();
       if (state.query.trim() && state.sort === 'recent') setSort('relevance');
@@ -1274,6 +1306,15 @@
       $('#fontSizeLabel').textContent = $('#cfgFontSize').value + ' px';
       readSettings();
     });
+
+    // 分批渲染：按钮 + 滚动到底自动补
+    $('#btnLoadMore').addEventListener('click', loadMore);
+    if (window.IntersectionObserver) {
+      var io = new IntersectionObserver(function (entries) {
+        if (entries.some(function (en) { return en.isIntersecting; })) loadMore();
+      }, { rootMargin: '240px' });
+      io.observe($('#loadMoreWrap'));
+    }
 
     // 命令面板
     initPalette();
@@ -1601,6 +1642,7 @@
   }
 
   function toggleTag(tag) {
+    state.limit = PAGE_SIZE;
     var i = state.tags.indexOf(tag);
     if (i >= 0) state.tags.splice(i, 1);
     else state.tags.push(tag);
@@ -1653,4 +1695,19 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
+
+  /**
+   * 调试/基准接口。
+   * 内部函数都在闭包里，压测与自动化验证需要一个稳定入口；
+   * 只暴露只读或幂等的能力，不提供"直接改数据"的后门。
+   */
+  window.__infoButler = {
+    state: state,
+    renderAll: function () { renderAll(); },
+    renderStream: function () { renderStream(); },
+    switchView: function (v, f) { switchView(v, f); },
+    openPalette: function (q) { openPalette(q); },
+    applyTheme: function () { applyTheme(); },
+    version: '1.1.0'
+  };
 })();

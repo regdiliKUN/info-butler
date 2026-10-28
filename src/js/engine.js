@@ -635,24 +635,76 @@
 
   /**
    * 计算内容关联。
+   *
+   * 全量两两比较是 O(n²)：2000 条记录 = 200 万对，实测 4.3 秒，
+   * 而这段代码在每次启动时都会跑一遍，等于开屏必卡 4 秒。
+   *
+   * 改成倒排索引召回候选：先用「有区分度的词」把可能相关的记录捞出来，
+   * 只对候选集做精确打分。共享词少于 2 个的直接跳过——
+   * 这种配对即使打分也几乎不可能越过阈值。
+   *
    * @param {Array} notes      全部记录
-   * @param {Array} [onlyIds]  只重算这些 id 的关联（保存单条时用，把 O(n²) 降到 O(n)），
+   * @param {Array} [onlyIds]  只重算这些 id 的关联（保存单条时用），
    *                            其余条目的关联表会同步合并这些 id，保持双向一致。
    */
+  var REL_CAND_MIN_W = 0.08;   // 低于此权重（多为常见词）不参与候选召回
+  var REL_POSTING_MAX = 80;    // 单个词的倒排表长度上限，防止常见词把候选集撑爆
+  var REL_CAND_MAX = 40;       // 每条记录最多精算多少个候选
+
+  function buildInverted(notes, vecs) {
+    var inv = Object.create(null);
+    notes.forEach(function (n) {
+      var v = vecs[n.id];
+      if (!v) return;
+      for (var t in v) {
+        if (v[t] < REL_CAND_MIN_W) continue;
+        var arr = inv[t] || (inv[t] = []);
+        if (arr.length < REL_POSTING_MAX) arr.push(n.id);
+      }
+    });
+    return inv;
+  }
+
+  function candidatesOf(id, vecs, inv) {
+    var v = vecs[id];
+    if (!v) return [];
+    var cnt = Object.create(null);
+    for (var t in v) {
+      if (v[t] < REL_CAND_MIN_W) continue;
+      var arr = inv[t];
+      if (!arr) continue;
+      for (var i = 0; i < arr.length; i++) {
+        var oid = arr[i];
+        if (oid === id) continue;
+        cnt[oid] = (cnt[oid] || 0) + 1;
+      }
+    }
+    var ids = [];
+    for (var k in cnt) if (cnt[k] >= 2) ids.push(k);
+    ids.sort(function (a, b) { return cnt[b] - cnt[a]; });
+    return ids.slice(0, REL_CAND_MAX);
+  }
+
   function relate(notes, onlyIds) {
     var idx = buildIndex(notes);
     var vecs = idx.vr;
+    var inv = buildInverted(notes, vecs);
+    var byId = {};
+    notes.forEach(function (n) { byId[n.id] = n; });
+
     var vecOf = function (n) {
       return vecs[n.id] || vectorize((n.title || '') + ' ' + (n.content || '') + ' ' + (n.tags || []).join(' '), idx.df, idx.N);
     };
 
     var collect = function (n) {
       var list = [];
-      notes.forEach(function (m) {
-        if (m.id === n.id) return;
+      var cands = candidatesOf(n.id, vecs, inv);
+      for (var i = 0; i < cands.length; i++) {
+        var m = byId[cands[i]];
+        if (!m) continue;
         var r = pairScore(n, m, vecOf(n), vecOf(m));
         if (r.score > REL_MIN) list.push({ id: m.id, score: r.score, shared: r.shared });
-      });
+      }
       list.sort(function (a, b) { return b.score - a.score; });
       return list.slice(0, REL_MAX);
     };
@@ -662,9 +714,8 @@
       return notes;
     }
 
-    var idset = {}, byId = {};
+    var idset = {};
     onlyIds.forEach(function (id) { idset[id] = true; });
-    notes.forEach(function (n) { byId[n.id] = n; });
 
     onlyIds.forEach(function (id) {
       var n = byId[id];
