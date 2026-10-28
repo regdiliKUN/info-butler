@@ -150,12 +150,42 @@
   }
 
   var toastTimer = null;
-  function toast(msg) {
+  var toastAction = null;
+
+  /**
+   * 轻提示。可选带一个动作按钮（典型场景是「撤销」）。
+   * 带动作时停留 6 秒而不是 2.4 秒 —— 否则用户根本来不及点。
+   */
+  function toast(msg, actionLabel, onAction) {
     var el = $('#toast');
-    el.textContent = msg;
+    el.innerHTML = '';
+    var span = document.createElement('span');
+    span.className = 'toast-msg';
+    span.textContent = msg;
+    el.appendChild(span);
+
+    toastAction = null;
+    if (actionLabel && onAction) {
+      var btn = document.createElement('button');
+      btn.className = 'toast-act';
+      btn.type = 'button';
+      btn.textContent = actionLabel;
+      btn.addEventListener('click', function () {
+        el.hidden = true;
+        clearTimeout(toastTimer);
+        toastAction = null;
+        onAction();
+      });
+      el.appendChild(btn);
+      toastAction = onAction;
+    }
+
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.hidden = true; }, 2400);
+    toastTimer = setTimeout(function () {
+      el.hidden = true;
+      toastAction = null;
+    }, actionLabel ? 6000 : 2400);
   }
 
   /* ---------------- 侧边栏 ---------------- */
@@ -630,9 +660,44 @@
     $('#cfgAutoTag').checked = !!c.autoTag;
 
     var total = Store.all().length;
-    var size = 0;
-    try { size = (localStorage.getItem('info_butler_notes_v1') || '').length; } catch (e) { }
-    $('#dataStat').textContent = total + ' 条记录 · ' + (size / 1024).toFixed(1) + ' KB';
+    var used = Store.estimateBytes();
+    var trashN = Store.trash().length;
+    $('#dataStat').textContent = total + ' 条记录 · 回收站 ' + trashN + ' 条 · 约 ' + (used / 1024).toFixed(0) + ' KB';
+
+    // 用量条：浏览器 localStorage 上限约 5MB，到 84%（4.2MB）就会开始提示
+    var quota = 5 * 1024 * 1024;
+    var pct = Math.min(100, used / quota * 100);
+    var bar = $('#usageBar');
+    if (bar) {
+      bar.hidden = false;
+      var fill = $('#usageFill');
+      fill.style.width = pct.toFixed(1) + '%';
+      fill.className = pct > 84 ? 'warn' : (pct > 60 ? 'mid' : '');
+      $('#usageText').textContent = '本地存储已用 ' + (used / 1024).toFixed(0) + ' KB / 约 5 MB（' + pct.toFixed(0) + '%）';
+    }
+
+    renderTrash();
+  }
+
+  function renderTrash() {
+    var box = $('#trashList');
+    if (!box) return;
+    var list = Store.trash();
+    if (!list.length) {
+      box.innerHTML = '<div class="trash-empty">回收站是空的</div>';
+      return;
+    }
+    box.innerHTML = list.map(function (n) {
+      var days = Math.max(0, Math.ceil((Date.now() - n.deletedAt) / 86400000));
+      return '<div class="trash-item" data-trash-id="' + esc(n.id) + '">' +
+        '<div class="trash-main">' +
+        '<div class="trash-title">' + esc(n.title || '（无标题）') + '</div>' +
+        '<div class="trash-meta">' + esc(typeLabel(n.type)) + ' · 删除于 ' + days + ' 天前</div>' +
+        '</div>' +
+        '<button class="mini-btn" data-trash-act="restore" data-id="' + esc(n.id) + '">恢复</button>' +
+        '<button class="mini-btn warn" data-trash-act="purge" data-id="' + esc(n.id) + '">彻底删除</button>' +
+        '</div>';
+    }).join('');
   }
 
   function readSettings() {
@@ -954,14 +1019,31 @@
     $('#cfgAutoTag').addEventListener('change', readSettings);
 
     // 数据
-    $('#btnExport').addEventListener('click', function () {
-      var blob = new Blob([Store.exportJSON()], { type: 'application/json' });
+    function download(text, filename, mime) {
+      var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = '信息管家备份-' + Engine.todayStr() + '.json';
+      a.download = filename;
+      document.body.appendChild(a);
       a.click();
-      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
-      toast('已导出');
+      document.body.removeChild(a);
+      // 立刻 revoke 会让部分浏览器的下载中断，延后释放
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+    }
+
+    $('#btnExport').addEventListener('click', function () {
+      download(Store.exportJSON(), '信息管家备份-' + Engine.todayStr() + '.json', 'application/json');
+      toast('已导出 JSON 备份');
+    });
+    $('#btnExportMd').addEventListener('click', function () {
+      if (!Store.all().length) { toast('还没有记录可导出'); return; }
+      download(Store.exportMarkdown(), '信息管家-' + Engine.todayStr() + '.md', 'text/markdown;charset=utf-8');
+      toast('已导出 Markdown');
+    });
+    $('#btnExportCsv').addEventListener('click', function () {
+      if (!Store.all().length) { toast('还没有记录可导出'); return; }
+      download(Store.exportCSV(), '信息管家-' + Engine.todayStr() + '.csv', 'text/csv;charset=utf-8');
+      toast('已导出 CSV');
     });
     $('#btnImport').addEventListener('click', function () { $('#importFile').click(); });
     $('#importFile').addEventListener('change', function (e) {
@@ -973,7 +1055,10 @@
           var r = Store.importJSON(String(reader.result));
           Engine.relate(Store.all());
           Store.saveNotes(); renderAll(); fillSettings();
-          toast('导入完成：新增 ' + r.added + ' 条，跳过 ' + r.skipped + ' 条');
+          var parts = ['新增 ' + r.added + ' 条'];
+          if (r.duplicated) parts.push('跳过重复 ' + r.duplicated + ' 条');
+          if (r.skipped) parts.push('跳过无效 ' + r.skipped + ' 条');
+          toast('导入完成：' + parts.join('，'));
         } catch (err) {
           toast('导入失败：' + err.message);
         }
@@ -983,9 +1068,45 @@
     });
     $('#btnClearAll').addEventListener('click', function () {
       if (!Store.all().length) { toast('已经是空的'); return; }
-      if (!confirm('确定清空全部 ' + Store.all().length + ' 条记录吗？此操作不可恢复，建议先导出备份。')) return;
+      if (!confirm('确定清空全部 ' + Store.all().length + ' 条记录吗？清空后可按 Ctrl+Z 撤销，但仍建议先导出备份。')) return;
       Store.clearAll(); renderAll(); fillSettings();
-      toast('已清空');
+      toast('已清空', '撤销', function () {
+        Store.undo(); Engine.relate(Store.all()); Store.saveNotes();
+        renderAll(); fillSettings();
+      });
+    });
+
+    // 回收站
+    $('#trashList').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-trash-act]');
+      if (!btn) return;
+      var id = btn.getAttribute('data-id');
+      var act = btn.getAttribute('data-trash-act');
+      if (act === 'restore') {
+        if (Store.restore(id)) {
+          Engine.relate(Store.all());
+          Store.saveNotes();
+          renderAll(); fillSettings();
+          toast('已恢复');
+        } else {
+          toast('恢复失败：记录可能已被清理');
+        }
+        return;
+      }
+      if (act === 'purge') {
+        if (!confirm('彻底删除后无法恢复，确定吗？')) return;
+        Store.purge(id);
+        renderTrash(); fillSettings();
+        toast('已彻底删除');
+      }
+    });
+    $('#btnEmptyTrash').addEventListener('click', function () {
+      var n = Store.trash().length;
+      if (!n) { toast('回收站已经是空的'); return; }
+      if (!confirm('彻底删除回收站里的 ' + n + ' 条记录？此操作不可恢复。')) return;
+      Store.emptyTrash();
+      renderTrash(); fillSettings();
+      toast('回收站已清空');
     });
 
     /* ---------- 导入文本文档（txt/md/csv/html/rtf/doc/docx/odt 等） ---------- */
@@ -1120,6 +1241,21 @@
         $('#composeModal').hidden = true;
         $('#detailDrawer').hidden = true;
       }
+      // Ctrl/⌘ + Z 撤销最近一次增删改。
+      // 在输入框里要放行浏览器自带的文本撤销，否则打字时按 Ctrl+Z 会误删记录。
+      var tag = (e.target && e.target.tagName) || '';
+      var typing = /^(INPUT|TEXTAREA)$/.test(tag) || (e.target && e.target.isContentEditable);
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && String(e.key).toLowerCase() === 'z' && !typing) {
+        if (Store.canUndo()) {
+          e.preventDefault();
+          Store.undo();
+          Engine.relate(Store.all());
+          Store.saveNotes();
+          renderAll();
+          fillSettings();
+          toast('已撤销上一步');
+        }
+      }
     });
   }
 
@@ -1175,11 +1311,21 @@
     if (act === 'del') {
       var x = Store.get(id);
       if (!x) return;
-      if (!confirm('删除「' + (x.title || '这条记录') + '」？')) return;
+      if (!confirm('删除「' + (x.title || '这条记录') + '」？会先移入回收站，可随时恢复。')) return;
       Store.remove(id);
       $('#detailDrawer').hidden = true;
       renderAll();
-      toast('已删除');
+      fillSettings();
+      toast('已移入回收站', '撤销', function () {
+        if (Store.restore(id)) {
+          Engine.relate(Store.all());
+          Store.saveNotes();
+          renderAll(); fillSettings();
+          toast('已恢复');
+        } else {
+          toast('恢复失败：记录可能已过期清理');
+        }
+      });
       return;
     }
   }
@@ -1198,6 +1344,18 @@
   function boot() {
     // 存储写入失败（最常见是配额写满）必须让用户看到，不能静默丢失
     Store.onError = function (msg) { toast(msg); };
+
+    // 容量预警：同一条提示 5 分钟内只弹一次，否则每次保存都弹会很烦
+    var lastQuotaWarn = 0;
+    Store.onQuotaWarn = function (msg) {
+      var now = Date.now();
+      if (now - lastQuotaWarn < 5 * 60000) return;
+      lastQuotaWarn = now;
+      toast(msg, '去设置', function () {
+        state.view = 'settings';
+        renderAll();
+      });
+    };
 
     Store.load();
     Engine.relate(Store.all());

@@ -183,6 +183,49 @@ async function waitServer(url, timeoutMs = 15000) {
       assert(n === 2, '取消后不应删除，实际剩 ' + n);
     });
 
+    await check('删除会进回收站，且提示里能一键撤销', async () => {
+      page.once('dialog', async (d) => { await d.accept(); });
+      await page.click('#cardList .card .mini-btn.warn');
+      await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length === 1, null, { timeout: 4000 });
+      const act = await page.textContent('#toast .toast-act');
+      assert(/撤销/.test(act), '提示里应有撤销按钮，实际：' + act);
+      await page.click('#toast .toast-act');
+      await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length === 2, null, { timeout: 4000 });
+    });
+
+    await check('Ctrl+Z 可撤销上一步操作', async () => {
+      // 只盯「有待办勾选框」的那张卡：首张卡可能是想法，没有 done 状态
+      const todoCard = page.locator('#cardList .card').filter({ has: page.locator('.todo-check') }).first();
+      const before = await todoCard.evaluate((el) => el.classList.contains('done'));
+      await todoCard.locator('.todo-check').click();
+      await page.waitForFunction(
+        (b) => {
+          const c = document.querySelector('#cardList .card .todo-check');
+          return c && c.closest('.card').classList.contains('done') !== b;
+        },
+        before, { timeout: 3000 }
+      );
+      // 让焦点离开卡片，模拟真实的「点完就按 Ctrl+Z」
+      await page.locator('.stream-head').click({ position: { x: 5, y: 5 } }).catch(() => {});
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(
+        (b) => {
+          const c = document.querySelector('#cardList .card .todo-check');
+          return c && c.closest('.card').classList.contains('done') === b;
+        },
+        before, { timeout: 3000 }
+      );
+    });
+
+    await check('设置页显示回收站与存储用量', async () => {
+      await page.click('#navMain .nav-item[data-view="settings"]');
+      await page.waitForSelector('#usageBar:not([hidden])');
+      const usage = await page.textContent('#usageText');
+      assert(/已用/.test(usage), '应显示存储用量，实际：' + usage);
+      const trash = await page.textContent('#trashList');
+      assert(trash.length > 0, '回收站区域应有内容');
+    });
+
     if (WANT_SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');

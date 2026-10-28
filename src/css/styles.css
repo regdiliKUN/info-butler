@@ -449,7 +449,41 @@ a { cursor: pointer; color: inherit; text-decoration: none; }
   background: #232b38; border: 1px solid var(--line); color: var(--txt);
   padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 90;
   box-shadow: var(--shadow); animation: pop .15s ease;
+  display: flex; align-items: center; gap: 14px; max-width: min(560px, 90vw);
 }
+.toast-msg { flex: 1; line-height: 1.5; }
+.toast-act {
+  flex: 0 0 auto; color: #9db3ff; font-weight: 600; font-size: 13px;
+  padding: 2px 8px; border-radius: 6px; background: rgba(108, 140, 255, .14);
+}
+.toast-act:hover { background: rgba(108, 140, 255, .26); color: #cfd9ff; }
+
+/* ---------------- 存储用量 / 回收站 ---------------- */
+.usage-bar { margin-top: 10px; }
+.usage-track {
+  height: 6px; border-radius: 6px; background: var(--line-soft); overflow: hidden;
+}
+.usage-track i {
+  display: block; height: 100%; width: 0; background: var(--ok);
+  transition: width .3s ease;
+}
+.usage-track i.mid { background: var(--todo); }
+.usage-track i.warn { background: var(--danger); }
+.usage-text { font-size: 11.5px; color: var(--txt-3); margin-top: 5px; }
+
+.trash-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.trash-empty { font-size: 12.5px; color: var(--txt-3); padding: 10px 2px; }
+.trash-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px; background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+}
+.trash-main { flex: 1; min-width: 0; }
+.trash-title {
+  font-size: 13px; color: var(--txt); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.trash-meta { font-size: 11px; color: var(--txt-3); margin-top: 2px; }
 
 @media (max-width: 1080px) {
   .insight-cols { grid-template-columns: 1fr; }

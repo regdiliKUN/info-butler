@@ -4,7 +4,7 @@
   "private": true,
   "description": "信息管家 —— 本地优先的个人信息知识库：记录、自动分类、检索、问答与阶段总结",
   "scripts": {
-    "test": "node --test tests/",
+    "test": "node --test \"tests/**/*.test.js\"",
     "test:e2e": "node tests/e2e.spec.js",
     "test:all": "npm test && npm run test:e2e",
     "serve": "node tools/serve.js",

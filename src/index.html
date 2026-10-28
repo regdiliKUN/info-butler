@@ -233,10 +233,18 @@
           <p class="hint">数据保存在本机浏览器本地存储中。建议定期导出备份。</p>
           <div class="form-row inline">
             <button class="ghost-btn" id="btnExport">导出 JSON</button>
+            <button class="ghost-btn" id="btnExportMd">导出 Markdown</button>
+            <button class="ghost-btn" id="btnExportCsv">导出 CSV</button>
             <button class="ghost-btn" id="btnImportDoc">导入文档</button>
             <button class="ghost-btn" id="btnImport">导入 JSON</button>
             <button class="ghost-btn danger" id="btnClearAll">清空全部数据</button>
+          </div>
+          <div class="form-row inline">
             <span class="stat-inline" id="dataStat"></span>
+          </div>
+          <div class="usage-bar" id="usageBar" hidden>
+            <div class="usage-track"><i id="usageFill"></i></div>
+            <div class="usage-text" id="usageText"></div>
           </div>
           <input type="file" id="importFile" accept="application/json" hidden />
           <input type="file" id="importDocFile" multiple hidden
@@ -251,6 +259,19 @@
           <div class="form-row inline">
             <button class="ghost-btn" id="btnSeed">载入示例数据</button>
           </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">回收站</div>
+          <div class="panel-actions">
+            <button class="ghost-btn" id="btnEmptyTrash">清空回收站</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <p class="hint">删除的记录会先放在这里，保留 30 天或最多 80 条，之后自动清理。</p>
+          <div class="trash-list" id="trashList"></div>
         </div>
       </div>
 
