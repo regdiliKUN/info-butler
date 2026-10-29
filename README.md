@@ -57,8 +57,8 @@ npm run serve        # http://127.0.0.1:4180/
 ## 开发
 
 ```bash
-npm test             # 单元测试（node:test，47 项，零额外依赖）
-npm run test:e2e     # 端到端测试（Playwright + 真实 Chromium，22 项）
+npm test             # 单元测试（node:test，82 项，零额外依赖）
+npm run test:e2e     # 端到端测试（Playwright + 真实 Chromium，30 项）
 npm run bench        # 性能基准：灌 2000 条记录，测六项耗时
 npm run build:exe    # 打包单文件 exe（需 Windows + Node）
 ```
@@ -71,7 +71,7 @@ src/                 # 运行时全部资源，无构建步骤
   css/styles.css     # 主题变量 + 组件样式
   js/store.js        # 数据层：持久化 / 回收站 / 撤销 / 导入导出 / 完整性修复
   js/engine.js       # 离线引擎：分词 / 检索 / 关联 / 摘要 / 总结 / 问答
-  js/docimport.js    # 文档导入：docx/doc/xlsx/xls/odt/rtf/csv/html…
+  js/docimport.js    # 文档导入：pdf/docx/doc/xlsx/xls/odt/rtf/csv/html…（零依赖解析）
   js/ai.js           # 大模型适配（OpenAI 兼容 /chat/completions）
   js/app.js          # 界面与交互
 tests/               # 单元测试 + e2e
@@ -98,9 +98,16 @@ docs/                # 路线图、进度账本、待办池
 - 未配置大模型时**完全没有网络请求**
 - 配置大模型后，只有「分类 / 摘要 / 问答 / 总结」这四类操作会把你选中的片段发给你自己填的服务商
 
+## 支持的导入格式
+
+PDF（文字层）、Word（doc/docx/docm/dot/dotx）、WPS（wps/wpt）、RTF、ODT/ODS、
+Excel（xls/xlsx/xlsm/xlt/xltx/xltm）、CSV/TSV、HTML、以及各种纯文本与代码文件。
+编码自动识别 UTF-8 / GBK / UTF-16，扩展名写错也能按内容嗅探。
+
 ## 已知边界
 
-- 扫描件（整页是图片的 PDF）没有文字层，无法提取文字
+- 扫描件（整页是图片的 PDF）没有文字层，无法提取文字；加密 PDF 需先另存为不加密版本
+- 少数 PDF 使用嵌入子集字体且缺少 ToUnicode 映射，这部分文字无法还原（会明确提示缺失字数）
 - localStorage 上限约 5MB，超大资料建议导入后精简正文，或定期导出归档
 - 换浏览器 / 换端口 / 清理浏览器数据会导致记录不可见，请定期导出备份
 
