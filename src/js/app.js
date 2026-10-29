@@ -888,8 +888,11 @@
 
     var btn = $('#btnTheme');
     if (btn) {
-      btn.textContent = resolved === 'light' ? '☀' : '☾';
+      // 用文字而不是 ☀/☾ 符号：那两个月相字符在中文字体里又细又小，
+      // 放大后像一对括号，用户根本看不出是主题开关。
+      btn.textContent = resolved === 'light' ? '深色' : '浅色';
       btn.title = resolved === 'light' ? '切换到深色' : '切换到浅色';
+      btn.setAttribute('aria-label', btn.title);
     }
   }
 

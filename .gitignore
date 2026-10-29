@@ -10,6 +10,10 @@ build/
 # 本地发布目录副本
 release/
 
-# 测试截图
+# 测试截图（README 用的 4 张保留）
 docs/screenshots/*.png
+!docs/screenshots/dark.png
+!docs/screenshots/light.png
+!docs/screenshots/palette.png
+!docs/screenshots/insights.png
 !docs/screenshots/.gitkeep

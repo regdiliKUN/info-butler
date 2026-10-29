@@ -5,6 +5,15 @@
 
 [![CI](https://github.com/regdiliKUN/info-butler/actions/workflows/ci.yml/badge.svg)](https://github.com/regdiliKUN/info-butler/actions/workflows/ci.yml)
 
+![深色主题](docs/screenshots/dark.png)
+
+<p align="center">
+  <img src="docs/screenshots/light.png" width="49%" alt="浅色主题" />
+  <img src="docs/screenshots/insights.png" width="49%" alt="洞察与阶段总结" />
+</p>
+
+![命令面板](docs/screenshots/palette.png)
+
 ---
 
 ## 它解决什么问题
