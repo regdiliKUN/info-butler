@@ -21,6 +21,7 @@
     onlyOpen: false,
     editingId: null,
     lastSummary: null,
+    timeRange: null,    // 查询里解析出的时间过滤条件（由 Engine.parseTimeRange 产出）
     limit: 60           // 列表一次渲染多少条；2000 条全量塞进 DOM 会明显拖慢滚动
   };
 
@@ -230,8 +231,10 @@
     }
 
     var scored = null;
+    state.timeRange = null;
     if (state.query.trim()) {
       scored = Engine.search(list, state.query);
+      state.timeRange = scored.time || null;
       var map = {};
       scored.forEach(function (r) { map[r.note.id] = r; });
       list = scored.map(function (r) { return r.note; });
@@ -271,6 +274,7 @@
 
     var parts = [list.length + ' 条记录'];
     if (state.query.trim()) parts.push('匹配「' + state.query.trim() + '」');
+    if (state.timeRange) parts.push('时间：' + state.timeRange.label);
     if (state.tags.length) parts.push('标签 ' + state.tags.map(function (t) { return '#' + t; }).join(' '));
     $('#streamSub').textContent = parts.join(' · ');
 
@@ -281,6 +285,11 @@
     });
     if (state.query.trim()) {
       chips.push('<button class="chip on" data-unquery="1">关键词：' + esc(state.query.trim()) + '<span class="x">×</span></button>');
+    }
+    // 时间词是从查询里解析出来的，用户往往不知道它生效了，必须显式回显并可一键取消
+    if (state.timeRange) {
+      chips.push('<button class="chip on chip-time" data-untime="1" title="点击只保留关键词">时间：' +
+        esc(state.timeRange.label) + '<span class="x">×</span></button>');
     }
     if (state.filter === 'todo') {
       var openCount = Store.all().filter(function (n) { return n.type === 'todo' && !n.done; }).length;
@@ -1309,6 +1318,14 @@
       if (u) { toggleTag(u.getAttribute('data-untag')); return; }
       if (e.target.closest('[data-unquery]')) {
         state.query = ''; $('#searchInput').value = ''; renderStream(); return;
+      }
+      if (e.target.closest('[data-untime]') && state.timeRange) {
+        // 只摘掉时间词，保留用户输入的关键词，不要整串清空
+        var rest = state.timeRange.cleaned;
+        state.query = rest;
+        $('#searchInput').value = rest;
+        renderStream();
+        return;
       }
       if (e.target.closest('[data-onlyopen]')) {
         state.onlyOpen = !state.onlyOpen;

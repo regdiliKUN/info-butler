@@ -142,6 +142,20 @@ async function waitServer(url, timeoutMs = 15000) {
       await page.click('#searchClear');
     });
 
+    await check('搜索里的时间词会变成可取消的筛选条件', async () => {
+      await page.fill('#searchInput', '今天');
+      await page.waitForFunction(() => !!document.querySelector('#filterChips .chip-time'), null, { timeout: 4000 });
+      const label = await page.textContent('#filterChips .chip-time');
+      assert(/今天/.test(label), '时间条件应回显「今天」，实际：' + label);
+      const n = await page.locator('#cardList .card').count();
+      assert(n === 2, '两条记录都是今天创建的，应全部命中，实际 ' + n);
+      await page.click('#filterChips .chip-time');
+      await page.waitForFunction(() => !document.querySelector('#filterChips .chip-time'), null, { timeout: 4000 });
+      const left = await page.inputValue('#searchInput');
+      assert(left === '', '取消时间条件后关键词应为空，实际：' + left);
+      await page.click('#searchClear');
+    });
+
     await check('勾选完成待办', async () => {
       await page.click('#cardList .card .todo-check');
       await page.waitForFunction(() => !!document.querySelector('#cardList .card.done'), null, { timeout: 4000 });

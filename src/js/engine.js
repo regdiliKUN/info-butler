@@ -463,6 +463,93 @@
     }).slice(0, 5);
   }
 
+  /* ---------------- 时间表达式 ----------------
+   * 「上周关于产品的想法」这类查询里，时间词和关键词混在一起。
+   * 直接把整串丢进 TF-IDF，「上周」会被当成普通词参与打分，几乎必然搜不到东西。
+   * 这里把时间词剥出来变成过滤条件，剩下的部分继续走关键词检索。
+   */
+
+  var DAY_MS = 86400000;
+
+  function startOfDay(offsetDays) {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + (offsetDays || 0));
+    return d.getTime();
+  }
+
+  /** 以周一为一周起点（中文语境的「本周」通常指周一到周日） */
+  function startOfWeek(offsetWeeks) {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    var dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - dow + (offsetWeeks || 0) * 7);
+    return d.getTime();
+  }
+
+  function startOfMonth(offsetMonths) {
+    var d = new Date();
+    return new Date(d.getFullYear(), d.getMonth() + (offsetMonths || 0), 1).getTime();
+  }
+
+  function startOfYear(offsetYears) {
+    return new Date(new Date().getFullYear() + (offsetYears || 0), 0, 1).getTime();
+  }
+
+  /* 顺序即优先级：越具体的规则越靠前，"最近 3 天" 不能被 "最近" 抢走 */
+  var TIME_RULES = [
+    { re: /(?:最近|近)\s*(\d+)\s*天/, label: function (m) { return '最近 ' + m[1] + ' 天'; },
+      range: function (m) { return [startOfDay(1 - (+m[1])), startOfDay(1)]; } },
+    { re: /(?:最近|近)\s*(\d+)\s*个?\s*(?:周|星期)/, label: function (m) { return '最近 ' + m[1] + ' 周'; },
+      range: function (m) { return [startOfDay(1 - (+m[1]) * 7), startOfDay(1)]; } },
+    { re: /(?:最近|近)\s*(\d+)\s*个?\s*月/, label: function (m) { return '最近 ' + m[1] + ' 个月'; },
+      range: function (m) { return [startOfMonth(1 - (+m[1])), startOfDay(1)]; } },
+    { re: /(\d+)\s*天前/, label: function (m) { return m[1] + ' 天前'; },
+      range: function (m) { return [startOfDay(-(+m[1])), startOfDay(-(+m[1]) + 1)]; } },
+    { re: /(?:最近|近)\s*(?:一|1)\s*周/, label: function () { return '最近一周'; },
+      range: function () { return [startOfDay(-6), startOfDay(1)]; } },
+    { re: /前天/, label: function () { return '前天'; },
+      range: function () { return [startOfDay(-2), startOfDay(-1)]; } },
+    { re: /昨天|昨日/, label: function () { return '昨天'; },
+      range: function () { return [startOfDay(-1), startOfDay(0)]; } },
+    { re: /今天|今日/, label: function () { return '今天'; },
+      range: function () { return [startOfDay(0), startOfDay(1)]; } },
+    { re: /上周|上个?星期/, label: function () { return '上周'; },
+      range: function () { return [startOfWeek(-1), startOfWeek(0)]; } },
+    { re: /本周|这周|这一周|这个星期/, label: function () { return '本周'; },
+      range: function () { return [startOfWeek(0), startOfWeek(1)]; } },
+    { re: /上个月|上月/, label: function () { return '上个月'; },
+      range: function () { return [startOfMonth(-1), startOfMonth(0)]; } },
+    { re: /本月|这个月/, label: function () { return '本月'; },
+      range: function () { return [startOfMonth(0), startOfMonth(1)]; } },
+    { re: /去年|上一年/, label: function () { return '去年'; },
+      range: function () { return [startOfYear(-1), startOfYear(0)]; } },
+    { re: /今年|本年/, label: function () { return '今年'; },
+      range: function () { return [startOfYear(0), startOfYear(1)]; } }
+  ];
+
+  /* 时间词剥掉后残留的连接词，不清掉会变成「的」「期间」这种噪声关键词 */
+  var TIME_TAIL_RE = /^[\s的在于里期间内共之中，,、]+|[\s的在于里期间内共之中，,、]+$/g;
+
+  /**
+   * 从查询里识别时间范围。
+   * @returns {{from:number,to:number,label:string,cleaned:string}|null}
+   */
+  function parseTimeRange(query) {
+    var q = String(query || '');
+    if (!q.trim()) return null;
+    for (var i = 0; i < TIME_RULES.length; i++) {
+      var rule = TIME_RULES[i];
+      var m = rule.re.exec(q);
+      if (!m) continue;
+      var span = rule.range(m);
+      var cleaned = q.replace(m[0], ' ');
+      cleaned = cleaned.replace(/\s+/g, ' ').replace(TIME_TAIL_RE, '').trim();
+      return { from: span[0], to: span[1], label: rule.label(m), text: m[0], cleaned: cleaned };
+    }
+    return null;
+  }
+
   /* ---------------- 检索 ---------------- */
 
   /* 查询意图：语义化提问（"还没做的事"）也要能命中，不能只靠字面重合 */
@@ -486,18 +573,43 @@
     if (!q) return notes.map(function (n) { return { note: n, score: 0, hits: [] }; });
 
     var intent = detectIntent(q);
+
+    // 时间词先剥出来当过滤条件；剩下的才是关键词
+    var time = parseTimeRange(q);
+    var kw = time ? time.cleaned : q;
+    var qtf = termFreq(kw);
+    var hasKeyword = Object.keys(qtf).length > 0 || (kw.length > 0 && !STOPSET[kw]);
+
+    var pool = notes;
+    if (time) {
+      pool = notes.filter(function (n) {
+        var t = n.createdAt || 0;
+        return t >= time.from && t < time.to;
+      });
+      // 时间已经变成硬过滤条件了，再叠一层「越新越靠前」的加分只会把
+      // 同时间段里完全不相关的记录也抬进结果（"本周产品" 搜出健身记录）。
+      delete intent.recent;
+    }
+
+    // 纯时间查询（"上周"）：时间就是全部条件，不必再算相似度
+    if (time && !hasKeyword) {
+      var only = pool.map(function (n) { return { note: n, score: 0, hits: [] }; });
+      only.intent = intent;
+      only.time = time;
+      return only;
+    }
+
     var idx = buildIndex(notes);
     var df = idx.df, N = idx.N;
-    var qtf = termFreq(q);
     var qvec = {};
     Object.keys(qtf).forEach(function (t) {
       qvec[t] = (1 + Math.log(qtf[t])) * idfOf(df[t], N);
     });
     // 短语命中用于高亮与精确加权，长度阈值放宽到 1 以支持单字检索（如「钱」「会」）
-    var phrases = q.split(/\s+/).filter(function (w) { return w.length >= 1; });
-    if (!phrases.length) phrases = [q];
+    var phrases = kw.split(/\s+/).filter(function (w) { return w.length >= 1; });
+    if (!phrases.length) phrases = [kw];
 
-    var res = notes.map(function (n) {
+    var res = pool.map(function (n) {
       var text = (n.title || '') + ' ' + (n.content || '') + ' ' + (n.tags || []).join(' ');
       var vec = idx.vs[n.id] || vectorize(text, df, N);
       var score = cosine(qvec, vec) * 12;
@@ -512,9 +624,9 @@
         }
       });
       (n.tags || []).forEach(function (t) {
-        if (q.indexOf(t) >= 0 || t.indexOf(q) >= 0) score += 2.2;
+        if (kw.indexOf(t) >= 0 || t.indexOf(kw) >= 0) score += 2.2;
       });
-      if ((n.title || '').indexOf(q) >= 0) score += 3;
+      if ((n.title || '').indexOf(kw) >= 0) score += 3;
       if (n.pinned) score += 0.25;
 
       score += intentBoost(n, intent);
@@ -530,6 +642,7 @@
         .sort(function (a, b) { return b.score - a.score; });
     }
     out.intent = intent;
+    out.time = time;
     return out;
   }
 
@@ -1033,6 +1146,7 @@
     search: search,
     pickContext: pickContext,
     detectIntent: detectIntent,
+    parseTimeRange: parseTimeRange,
     relate: relate,
     findSimilar: findSimilar,
     stats: stats,
