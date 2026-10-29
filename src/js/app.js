@@ -408,9 +408,23 @@
 
   /* ---------------- 详情抽屉 ---------------- */
 
+  /** 详情里"上一条 / 下一条"的邻居，按当前列表的可见顺序走 */
+  function detailNeighbors(id) {
+    var ids = currentList().map(function (n) { return n.id; });
+    var i = ids.indexOf(id);
+    if (i < 0) return { prev: null, next: null, pos: 0, total: ids.length };
+    return {
+      prev: i > 0 ? ids[i - 1] : null,
+      next: i < ids.length - 1 ? ids[i + 1] : null,
+      pos: i + 1,
+      total: ids.length
+    };
+  }
+
   function openDetail(id) {
     var n = Store.get(id);
     if (!n) return;
+    var nb = detailNeighbors(id);
     var rel = (n.related || []).map(function (r) {
       var m = Store.get(r.id);
       if (!m) return '';
@@ -419,13 +433,21 @@
         '<span class="rel-score">' + Math.round(r.score * 100) + '%</span></div>';
     }).join('');
 
+    $('#detailBox').setAttribute('data-note-id', id);
     $('#detailBox').innerHTML =
       '<div class="detail-head">' +
       '<span class="type-badge ' + n.type + '">' + esc(typeLabel(n.type)) + '</span>' +
       '<span class="prio-badge ' + (n.priority || 'medium') + '">' + PRIO_LABEL[n.priority || 'medium'] + '</span>' +
       (n.dueDate ? '<span class="due-badge">截止 ' + esc(n.dueDate) + '</span>' : '') +
       '<span class="card-time">' + fmtTime(n.createdAt) + '</span>' +
-      '<button class="icon-btn" data-close="1" style="margin-left:auto">×</button>' +
+      '<span class="detail-nav">' +
+      '<button class="icon-btn" data-act="prev" data-id="' + (nb.prev || '') + '"' +
+      (nb.prev ? '' : ' disabled') + ' aria-label="上一条" title="上一条（←）">‹</button>' +
+      '<span class="detail-pos">' + nb.pos + ' / ' + nb.total + '</span>' +
+      '<button class="icon-btn" data-act="next" data-id="' + (nb.next || '') + '"' +
+      (nb.next ? '' : ' disabled') + ' aria-label="下一条" title="下一条（→）">›</button>' +
+      '</span>' +
+      '<button class="icon-btn" data-close="1" aria-label="关闭">×</button>' +
       '</div>' +
       '<h2 class="detail-title">' + esc(n.title || '（无标题）') + '</h2>' +
       (n.summary ? '<div class="detail-sec"><div class="detail-sec-t">摘要</div><div class="detail-text">' + esc(n.summary) + '</div></div>' : '') +
@@ -516,6 +538,19 @@
       Engine.relate(Store.all(), [note.id]);
       Store.saveNotes();
       renderAll();
+
+      // 新记录顺手查一下有没有重复：同一件事记两遍是最常见的数据质量问题，
+      // 而"刚记完"正是最该提醒的时刻——事后翻列表才发现就晚了。
+      if (!existing) {
+        var dup = Engine.findSimilar(Store.all(), note, 0.82, 1);
+        if (dup.length) {
+          var t = dup[0].note.title || '另一条记录';
+          toast('已记录，但与「' + (t.length > 16 ? t.slice(0, 16) + '…' : t) + '」高度相似', '查看', function () {
+            openDetail(dup[0].note.id);
+          });
+          return;
+        }
+      }
       toast(existing ? '已更新' : '已记录');
     };
 
@@ -1673,6 +1708,17 @@
 
       if (mod || e.altKey) return;
 
+      // 详情打开时用 ← → 在记录间移动，跟翻邮件一个手感
+      if (!$('#detailDrawer').hidden && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        var curNote = $('#detailBox').getAttribute('data-note-id');
+        if (curNote) {
+          var nb = detailNeighbors(curNote);
+          var target = e.key === 'ArrowLeft' ? nb.prev : nb.next;
+          if (target) { e.preventDefault(); openDetail(target); }
+        }
+        return;
+      }
+
       // 单键快捷键：/ 搜索、n 新建、? 命令面板（已输入 ? 时顺带展示快捷键）
       if (e.key === '/') { e.preventDefault(); $('#searchInput').focus(); return; }
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openCompose(); return; }
@@ -1708,6 +1754,10 @@
       return;
     }
     if (act === 'detail') { openDetail(id); return; }
+    if (act === 'prev' || act === 'next') {
+      if (id) openDetail(id);
+      return;
+    }
     if (act === 'edit') {
       $('#detailDrawer').hidden = true;
       openCompose(Store.get(id));

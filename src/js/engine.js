@@ -216,7 +216,7 @@
       var n = notes[i];
       var u = n.updatedAt || n.createdAt || 0;
       if (u > last) last = u;
-      var s = (n.id || '') + ':' + u;
+      var s = (n.id || '') + ':' + u + ':' + ((n.content || '').length) + ':' + ((n.title || '').length);
       for (var j = 0; j < s.length; j++) {
         h ^= s.charCodeAt(j);
         h = (h * 0x01000193) >>> 0;
@@ -601,6 +601,18 @@
     return s;
   }
 
+  /** 纯内容相似度（不看标签、类型、时间），用于关联打分与重复检测 */
+  function contentSim(va, vb) {
+    var cos = cosine(va, vb);
+    var sharedW = 0, sharedCount = 0;
+    for (var k in va) {
+      if (vb[k]) { sharedCount++; sharedW += Math.min(va[k], vb[k]); }
+    }
+    var denom = Math.min(vecSum(va), vecSum(vb)) || 1;
+    var contain = Math.min(1, sharedW / denom) * Math.min(1, sharedCount / 3);
+    return { cos: cos, contain: contain };
+  }
+
   /**
    * 一对记录的相关度。
    *
@@ -609,28 +621,48 @@
    * 这里补一个**包含度**：短文本的词有多大比例被另一条覆盖（用 TF-IDF 权重加权），
    * 再用「共享词数」打折，避免仅靠一个高频词就误判为相关。
    *
-   * 最终 = 余弦 0.50 + 包含度 0.32 + 共享标签(每个 0.08，最多 3 个)
+   * 最终 = 余弦 0.35 + 包含度 0.55 + 共享标签(每个 0.08，最多 3 个)
    *      + 同类型 0.04 + 三天内 0.03（只用于打破平局）
    */
   function pairScore(a, b, va, vb) {
-    var cos = cosine(va, vb);
-
-    var sharedW = 0, sharedCount = 0;
-    for (var k in va) {
-      if (vb[k]) { sharedCount++; sharedW += Math.min(va[k], vb[k]); }
-    }
-    var denom = Math.min(vecSum(va), vecSum(vb)) || 1;
-    var contain = Math.min(1, sharedW / denom) * Math.min(1, sharedCount / 3);
-
+    var sim = contentSim(va, vb);
     // 短文之间"互相覆盖"比"方向一致"更能说明相关，所以包含度权重高于余弦
-    var sim = cos * 0.35 + contain * 0.55;
+    var score = sim.cos * 0.35 + sim.contain * 0.55;
 
     var shared = (a.tags || []).filter(function (t) { return (b.tags || []).indexOf(t) >= 0; });
-    sim += Math.min(shared.length, 3) * 0.08;
-    if (a.type === b.type) sim += 0.04;
+    score += Math.min(shared.length, 3) * 0.08;
+    if (a.type === b.type) score += 0.04;
     var dt = Math.abs((a.createdAt || 0) - (b.createdAt || 0)) / 86400000;
-    if (dt < 3) sim += 0.03;
-    return { score: Math.min(0.98, sim), shared: shared };
+    if (dt < 3) score += 0.03;
+    return { score: Math.min(0.98, score), shared: shared };
+  }
+
+  /**
+   * 找与目标记录高度相似的已有记录（重复检测）。
+   *
+   * 与「相关内容」不同，这里只看正文：标签相同、类型相同都不该让两条
+   * 内容不同的记录被判成重复。阈值默认 0.82 —— 低于这个值多半只是同主题，
+   * 高于这个值基本就是同一条内容记了两遍。
+   */
+  function findSimilar(notes, target, minScore, limit) {
+    if (!notes || !notes.length || !target) return [];
+    var idx = buildIndex(notes);
+    var tv = vectorize(
+      (target.title || '') + ' ' + (target.content || '') + ' ' + (target.tags || []).join(' '),
+      idx.df, idx.N
+    );
+    var floor = minScore || 0.82;
+    var out = [];
+    notes.forEach(function (n) {
+      if (n.id === target.id) return;
+      var v = idx.vr[n.id];
+      if (!v) return;
+      var sim = contentSim(tv, v);
+      var score = sim.cos * 0.5 + sim.contain * 0.5;
+      if (score >= floor) out.push({ note: n, score: score });
+    });
+    out.sort(function (a, b) { return b.score - a.score; });
+    return out.slice(0, limit || 3);
   }
 
   /**
@@ -1002,6 +1034,7 @@
     pickContext: pickContext,
     detectIntent: detectIntent,
     relate: relate,
+    findSimilar: findSimilar,
     stats: stats,
     buildSummary: buildSummary,
     offlineAnswer: offlineAnswer,

@@ -356,6 +356,42 @@ async function waitServer(url, timeoutMs = 15000) {
       assert(href === '#cardList', '跳转链接应指向内容区，实际 ' + href);
     });
 
+    await check('详情里可用 ← → 在记录间移动', async () => {
+      await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');
+      await page.click('#cardList .card .card-title');
+      await page.waitForSelector('#detailDrawer:not([hidden])');
+      const firstId = await page.getAttribute('#detailBox', 'data-note-id');
+      const pos = await page.textContent('#detailBox .detail-pos');
+      assert(/^1 \/ \d+/.test(pos), '应显示位置，实际：' + pos);
+      await page.keyboard.press('ArrowRight');
+      await page.waitForFunction((prev) => document.querySelector('#detailBox').getAttribute('data-note-id') !== prev, firstId, { timeout: 3000 });
+      const secondId = await page.getAttribute('#detailBox', 'data-note-id');
+      assert(secondId && secondId !== firstId, '→ 应切到下一条');
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForFunction((want) => document.querySelector('#detailBox').getAttribute('data-note-id') === want, firstId, { timeout: 3000 });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#detailDrawer[hidden]', { state: 'attached' });
+    });
+
+    await check('记录重复内容时提示已有相似记录', async () => {
+      await page.click('#btnCompose');
+      await page.fill('#composeText', '明天下午三点前把 Q4 路线图发给张总，记得附上投入产出比表格。');
+      await page.click('#btnSaveNote');
+      await page.waitForFunction(() => {
+        const t = document.querySelector('#toast .toast-msg');
+        return t && /相似/.test(t.textContent);
+      }, null, { timeout: 5000 });
+      const act = await page.textContent('#toast .toast-act');
+      assert(/查看/.test(act), '提示里应有「查看」，实际：' + act);
+      // 清理这条重复记录，避免影响后面的列表断言
+      await page.evaluate(() => {
+        const n = Store.all()[0];
+        Store.remove(n.id);
+        Store.emptyTrash();
+        window.__infoButler.renderAll();
+      });
+    });
+
     if (WANT_SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');

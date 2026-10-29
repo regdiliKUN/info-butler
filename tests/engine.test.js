@@ -254,6 +254,34 @@ test('buildIndex 在条数相同但内容不同时不复用旧索引', () => {
   assert.ok(idx.vs.c, '新数据必须重新建索引');
 });
 
+test('findSimilar 命中重复内容、放过同主题但不同的内容', () => {
+  const notes = [
+    note({ id: 'a', title: '整理 Q4 产品路线图', content: '整理 Q4 产品路线图，把三个候选方向按投入产出比排序。' }),
+    note({ id: 'b', title: '整理 Q4 产品路线图', content: '整理 Q4 产品路线图，把三个候选方向按投入产出比排序。' }),
+    note({ id: 'c', title: '健身计划', content: '这周三次力量训练，周末补一次有氧。' })
+  ];
+  const hits = E.findSimilar(notes, notes[0], 0.82, 3);
+  assert.strictEqual(hits.length, 1, '应只命中那一条重复记录，实际 ' + hits.length);
+  assert.strictEqual(hits[0].note.id, 'b');
+  assert.ok(hits[0].score >= 0.82);
+});
+
+test('findSimilar 不因标签相同就判重复', () => {
+  const notes = [
+    note({ id: 'a', content: '产品路线图要按投入产出比排序。', tags: ['产品'] }),
+    note({ id: 'b', content: '今天下午和设计师对齐了交互稿细节。', tags: ['产品'] })
+  ];
+  // 注意：返回的数组在 vm 上下文里创建，原型与本上下文不同，
+  // 直接 deepStrictEqual 会因「同结构但不同引用」失败，故按值比较
+  const ids = E.findSimilar(notes, notes[0], 0.82, 3).map((h) => h.note.id);
+  assert.strictEqual(ids.join(','), '', '仅标签相同不应判为重复');
+});
+
+test('findSimilar 排除自身', () => {
+  const notes = [note({ id: 'a', content: '只有一条记录' })];
+  assert.strictEqual(E.findSimilar(notes, notes[0], 0.1, 3).length, 0);
+});
+
 test('relate 判定表：相关要连上，无关要断开', () => {
   const cases = [
     ['明天下午三点前把 Q4 路线图发给张总，记得附上投入产出比表格。',
