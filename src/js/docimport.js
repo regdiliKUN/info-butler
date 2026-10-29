@@ -824,13 +824,503 @@
   var BACKUP_CHECK = /^[\s\r\n]*[\[{]/;
 
   // 扩展名 → 路由。Office 类以「内容」为准（见 sniffKind），其余按扩展名即可。
+  /* ---------------- PDF（零依赖文本提取） ----------------
+   * 目标不是做一个完整 PDF 渲染器，而是把「文字层」捞出来。
+   * 覆盖三类最常见的情况：
+   *   1) 未压缩的内容流 + 简单字体（WinAnsi）—— 手打的小 PDF
+   *   2) FlateDecode 压缩的内容流 —— 绝大多数导出型 PDF
+   *   3) Type0 / Identity-H + ToUnicode CMap —— 中文 PDF，必须靠 CMap 才能还原汉字
+   * 拿不到 ToUnicode 的 Identity-H 字体无法还原（那是嵌入子集字体的字形编码），
+   * 这时宁可明确报「无法提取」，也不要把乱码灌进用户的资料库。
+   */
+
+  function latin1ToBytes(str) {
+    var out = new Uint8Array(str.length);
+    for (var i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xFF;
+    return out;
+  }
+
+  function bytesToLatin1(bytes) {
+    var out = '', CHUNK = 8192;
+    for (var i = 0; i < bytes.length; i += CHUNK) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+    }
+    return out;
+  }
+
+  function inflateZlib(bytes) {
+    if (typeof DecompressionStream === 'undefined') {
+      return Promise.reject(new Error('当前浏览器不支持解压（DecompressionStream）'));
+    }
+    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Response(stream).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+  }
+
+  /** 从 `<<` 开始找到配对的 `>>`，返回其后一位下标 */
+  function dictEnd(s, i) {
+    var depth = 0;
+    for (var j = i; j < s.length - 1; j++) {
+      if (s[j] === '<' && s[j + 1] === '<') { depth++; j++; continue; }
+      if (s[j] === '>' && s[j + 1] === '>') { depth--; j++; if (depth === 0) return j + 1; }
+    }
+    return s.length;
+  }
+
+  function pdfObjects(latin) {
+    var objs = {};
+    var re = /(?:^|[\s>\]])(\d+)\s+(\d+)\s+obj\b/g;
+    var m, hits = [];
+    while ((m = re.exec(latin))) hits.push({ num: +m[1], start: m.index, bodyStart: re.lastIndex });
+
+    for (var i = 0; i < hits.length; i++) {
+      var stop = hits[i + 1] ? hits[i + 1].start : latin.length;
+      var e = latin.indexOf('endobj', hits[i].bodyStart);
+      if (e >= 0 && e < stop) stop = e;
+      // 增量更新时同号对象以最后一份为准
+      objs[hits[i].num] = latin.slice(hits[i].bodyStart, stop);
+    }
+    return objs;
+  }
+
+  /** 拆出对象里的 stream 数据（仍是 latin1 字符串，按字节一一对应） */
+  function pdfStream(body) {
+    if (!body) return null;
+    var i = body.indexOf('stream');
+    if (i < 0) return null;
+    var dict = body.slice(0, i);
+    var j = i + 6;
+    if (body[j] === '\r') j++;
+    if (body[j] === '\n') j++;
+    var e = body.indexOf('endstream', j);
+    if (e < 0) return null;
+    var data = body.slice(j, e);
+    if (data.charCodeAt(data.length - 1) === 10) data = data.slice(0, -1);
+    if (data.charCodeAt(data.length - 1) === 13) data = data.slice(0, -1);
+    return { dict: dict, data: data };
+  }
+
+  /** 解压 stream；不认识的过滤器返回 null（宁可跳过，也不要吐乱码） */
+  function pdfDecodeStream(streamObj) {
+    if (!streamObj) return Promise.resolve(null);
+    var dict = streamObj.dict;
+    var hasFlate = /\/FlateDecode/.test(dict);
+    var otherFilter = /\/Filter\s*(\[[^\]]*\]|\/\w+)/.exec(dict);
+    if (otherFilter && !hasFlate) return Promise.resolve(null);
+    if (!hasFlate) return Promise.resolve(streamObj.data);
+    return inflateZlib(latin1ToBytes(streamObj.data)).then(function (bytes) {
+      return bytesToLatin1(bytes);
+    }).catch(function () { return null; });
+  }
+
+  /* ---- 字符串 / CMap ---- */
+
+  function readLiteralString(s, i) {
+    var out = '', depth = 1, j = i + 1;
+    while (j < s.length) {
+      var c = s[j];
+      if (c === '\\') {
+        var e = s[j + 1];
+        if (e === 'n') { out += '\n'; j += 2; continue; }
+        if (e === 'r') { out += '\r'; j += 2; continue; }
+        if (e === 't') { out += '\t'; j += 2; continue; }
+        if (e === 'b') { out += '\b'; j += 2; continue; }
+        if (e === 'f') { out += '\f'; j += 2; continue; }
+        if (e === '(' || e === ')' || e === '\\') { out += e; j += 2; continue; }
+        if (e >= '0' && e <= '7') {
+          var oct = '', k = j + 1;
+          while (k < s.length && oct.length < 3 && s[k] >= '0' && s[k] <= '7') { oct += s[k]; k++; }
+          out += String.fromCharCode(parseInt(oct, 8) & 0xFF);
+          j = k; continue;
+        }
+        if (e === '\n') { j += 2; continue; }
+        if (e === '\r') { j += (s[j + 2] === '\n' ? 3 : 2); continue; }
+        out += e; j += 2; continue;
+      }
+      if (c === '(') { depth++; out += c; j++; continue; }
+      if (c === ')') { depth--; if (depth === 0) return { v: out, next: j + 1 }; out += c; j++; continue; }
+      out += c; j++;
+  }
+    return { v: out, next: s.length };
+  }
+
+  function readHexString(s, i) {
+    var j = i + 1, hex = '';
+    while (j < s.length && s[j] !== '>') { hex += s[j]; j++; }
+    if (hex.length % 2) hex += '0';
+    var out = '';
+    for (var k = 0; k < hex.length; k += 2) {
+      var v = parseInt(hex.substr(k, 2), 16);
+      out += String.fromCharCode(isFinite(v) ? v : 0);
+    }
+    return { v: out, next: j + 1 };
+  }
+
+  function hexToUnicode(hex) {
+    var out = '';
+    for (var i = 0; i + 4 <= hex.length; i += 4) {
+      out += String.fromCharCode(parseInt(hex.substr(i, 4), 16));
+    }
+    return out || '\uFFFD';
+  }
+
+  function parseToUnicode(text) {
+    var map = {};
+    var m;
+
+    var reChar = /beginbfchar([\s\S]*?)endbfchar/g;
+    while ((m = reChar.exec(text))) {
+      var pr = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g, p;
+      while ((p = pr.exec(m[1]))) map[parseInt(p[1], 16)] = hexToUnicode(p[2]);
+    }
+
+    var reRange = /beginbfrange([\s\S]*?)endbfrange/g;
+    while ((m = reRange.exec(text))) {
+      var rr = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(?:<([0-9a-fA-F]+)>|\[([\s\S]*?)\])/g, q;
+      while ((q = rr.exec(m[1]))) {
+        var lo = parseInt(q[1], 16), hi = parseInt(q[2], 16);
+        if (hi < lo || hi - lo > 65535) continue;
+        if (q[3]) {
+          var base = q[3];
+          var tail = base.slice(-4);
+          var prefix = base.slice(0, -4);
+          var baseCode = parseInt(tail, 16);
+          for (var c = lo; c <= hi; c++) {
+            var v = baseCode + (c - lo);
+            map[c] = hexToUnicode(prefix + ('0000' + v.toString(16)).slice(-4));
+          }
+        } else if (q[4]) {
+          var items = q[4].match(/<[0-9a-fA-F]+>/g) || [];
+          for (var d = 0; d < items.length && lo + d <= hi; d++) {
+            map[lo + d] = hexToUnicode(items[d].replace(/[<>]/g, ''));
+          }
+        }
+      }
+    }
+    return map;
+  }
+
+  /* ---- 字体 ---- */
+
+  function collectFontInfo(num, objs, cache) {
+    if (cache[num]) return cache[num];
+    var body = objs[num];
+    if (body == null) { cache[num] = Promise.resolve(null); return cache[num]; }
+
+    var twoByte = /\/Subtype\s*\/Type0/.test(body) || /Identity-[HV]/.test(body);
+    var tu = /\/ToUnicode\s+(\d+)\s+0\s+R/.exec(body);
+
+    var p;
+    if (tu) {
+      p = pdfDecodeStream(pdfStream(objs[+tu[1]])).then(function (txt) {
+        return txt ? parseToUnicode(txt) : null;
+      });
+    } else {
+      // Type0 的 ToUnicode 有时挂在后代字体上
+      var desc = /\/DescendantFonts\s*\[\s*(\d+)\s+0\s+R/.exec(body);
+      if (!desc) return (cache[num] = Promise.resolve({ twoByte: twoByte, map: null }));
+      var child = objs[+desc[1]] || '';
+      var tu2 = /\/ToUnicode\s+(\d+)\s+0\s+R/.exec(child);
+      if (!tu2) return (cache[num] = Promise.resolve({ twoByte: twoByte, map: null }));
+      p = pdfDecodeStream(pdfStream(objs[+tu2[1]])).then(function (txt) {
+        return txt ? parseToUnicode(txt) : null;
+      });
+    }
+
+    cache[num] = p.then(function (map) {
+      return { twoByte: twoByte, map: map && Object.keys(map).length ? map : null };
+    });
+    return cache[num];
+  }
+
+  function decodePdfString(str, font) {
+    if (!font) font = { twoByte: false, map: null };
+    var out = '', miss = 0, i;
+    if (font.twoByte) {
+      for (i = 0; i + 1 < str.length; i += 2) {
+        var code = (str.charCodeAt(i) << 8) | str.charCodeAt(i + 1);
+        if (font.map && font.map[code] != null) out += font.map[code];
+        else miss++;
+      }
+    } else {
+      for (i = 0; i < str.length; i++) {
+        var c = str.charCodeAt(i);
+        if (font.map && font.map[c] != null) out += font.map[c];
+        else out += String.fromCharCode(c);
+      }
+    }
+    return { text: out, miss: miss };
+  }
+
+  /* ---- 内容流 ---- */
+
+  function parseContentStream(s, fontByName) {
+    var out = '', miss = 0;
+    var stack = [], arr = null;
+    var font = null;
+    var i = 0, n = s.length;
+
+    function push(v) { if (arr) arr.push(v); else stack.push(v); }
+    function lastString() {
+      for (var k = stack.length - 1; k >= 0; k--) if (stack[k] && stack[k].t === 's') return stack[k].v;
+      return null;
+    }
+    function emit(str) {
+      if (str == null) return;
+      var r = decodePdfString(str, font);
+      out += r.text;
+      miss += r.miss;
+    }
+
+    while (i < n) {
+      var c = s[i];
+      if (c === '(') { var r1 = readLiteralString(s, i); push({ t: 's', v: r1.v }); i = r1.next; continue; }
+      if (c === '<') {
+        if (s[i + 1] === '<') { i = dictEnd(s, i); continue; }
+        var r2 = readHexString(s, i); push({ t: 's', v: r2.v }); i = r2.next; continue;
+      }
+      if (c === '[') { arr = []; i++; continue; }
+      if (c === ']') { var done = arr || []; arr = null; push({ t: 'a', v: done }); i++; continue; }
+      if (c === '/') {
+        var j = i + 1;
+        while (j < n && !/[\s\/\[\]<>\(\)]/.test(s[j])) j++;
+        push({ t: 'n', v: s.slice(i + 1, j) });
+        i = j; continue;
+      }
+      if (c === '%') { while (i < n && s[i] !== '\n' && s[i] !== '\r') i++; continue; }
+      if (c === '>' || c === ')' || c === ']') { i++; continue; }
+      if (/\s/.test(c)) { i++; continue; }
+
+      var j2 = i;
+      while (j2 < n && !/[\s\/\[\]<>\(\)]/.test(s[j2])) j2++;
+      var tok = s.slice(i, j2);
+      i = j2;
+
+      if (/^[-+]?(\d+\.?\d*|\.\d+)$/.test(tok)) { push({ t: 'num', v: parseFloat(tok) }); continue; }
+
+      // 以下都是操作符
+      switch (tok) {
+        case 'Tf':
+          if (stack.length >= 2 && stack[0] && stack[0].t === 'n') font = fontByName[stack[0].v] || null;
+          break;
+        case 'Tj':
+          emit(lastString());
+          break;
+        case 'TJ':
+          for (var a = stack.length - 1; a >= 0; a--) {
+            if (stack[a] && stack[a].t === 'a') {
+              var parts = stack[a].v;
+              for (var b = 0; b < parts.length; b++) {
+                var it = parts[b];
+                if (it.t === 's') emit(it.v);
+                // 数组里的负向字距常见于词间空格，超过阈值补一个空格
+                else if (it.t === 'num' && it.v < -180) out += ' ';
+              }
+              break;
+            }
+          }
+          break;
+        case "'":
+          out += '\n'; emit(lastString());
+          break;
+        case '"':
+          out += '\n'; emit(lastString());
+          break;
+        case 'Td': case 'TD':
+          if (stack.length >= 2 && Math.abs(stack[stack.length - 1].v || 0) > 0.01) out += '\n';
+          break;
+        case 'T*':
+          out += '\n';
+          break;
+        case 'ET':
+          out += '\n';
+          break;
+        default:
+          break;
+      }
+      stack.length = 0;
+      arr = null;
+    }
+    return { text: out, miss: miss };
+  }
+
+  /* ---- 页面 ---- */
+
+  function pageResourcesBody(objs, pageBody) {
+    var m = /\/Resources\s+(\d+)\s+0\s+R/.exec(pageBody);
+    if (m) return objs[+m[1]] || '';
+    var i = pageBody.indexOf('/Resources');
+    if (i >= 0) {
+      var k = pageBody.indexOf('<<', i);
+      if (k >= 0) return pageBody.slice(k, dictEnd(pageBody, k));
+    }
+    return '';
+  }
+
+  function fontRefsOf(resBody) {
+    var out = {};
+    var i = resBody.indexOf('/Font');
+    if (i < 0) return out;
+    var k = resBody.indexOf('<<', i);
+    if (k < 0) return out;
+    var seg = resBody.slice(k, dictEnd(resBody, k));
+    var re = /\/([A-Za-z0-9_.+-]+)\s+(\d+)\s+0\s+R/g, m;
+    while ((m = re.exec(seg))) out[m[1]] = +m[2];
+    return out;
+  }
+
+  function contentRefsOf(pageBody) {
+    var refs = [];
+    var one = /\/Contents\s+(\d+)\s+0\s+R/.exec(pageBody);
+    if (one) return [+one[1]];
+    var many = /\/Contents\s*\[([^\]]*)\]/.exec(pageBody);
+    if (many) {
+      var re = /(\d+)\s+0\s+R/g, m;
+      while ((m = re.exec(many[1]))) refs.push(+m[1]);
+    }
+    return refs;
+  }
+
+  function pageOrder(objs) {
+    // 优先走 /Pages 树，保证页面顺序与文档一致
+    var root = null, num;
+    for (num in objs) {
+      if (/\/Type\s*\/Pages/.test(objs[num]) && !/\/Parent\s+\d+\s+0\s+R/.test(objs[num])) { root = +num; break; }
+    }
+    var out = [], seen = {};
+    (function walk(n, depth) {
+      if (depth > 64 || n == null || seen[n] || !objs[n]) return;
+      seen[n] = true;
+      var body = objs[n];
+      if (/\/Type\s*\/Page\b/.test(body)) { out.push(n); return; }
+      var kids = /\/Kids\s*\[([\s\S]*?)\]/.exec(body);
+      if (!kids) return;
+      var re = /(\d+)\s+0\s+R/g, m;
+      while ((m = re.exec(kids[1]))) walk(+m[1], depth + 1);
+    })(root, 0);
+
+    if (out.length) return out;
+
+    // 兜底：没有可用的页面树（常见于页面字典藏在对象流里的 PDF），按对象号排序
+    for (num in objs) {
+      if (/\/Type\s*\/Page\b/.test(objs[num])) out.push(+num);
+    }
+    out.sort(function (a, b) { return a - b; });
+    return out;
+  }
+
+  function extractPdf(bytes) {
+    var latin = bytesToLatin1(bytes);
+    if (latin.indexOf('%PDF') < 0) {
+      return Promise.resolve({ kind: 'error', error: '文件内容不是有效的 PDF' });
+    }
+    if (/\/Encrypt\s/.test(latin) && /\/Encrypt\s+\d+\s+0\s+R/.test(latin)) {
+      return Promise.resolve({ kind: 'error', error: 'PDF 已加密，无法提取文字（请先用阅读器另存为不加密版本）' });
+    }
+
+    var objs = pdfObjects(latin);
+    var fontCache = {};
+
+    // 展开对象流（现代 PDF 把页面字典压进 ObjStm，不展开就找不到任何页面）
+    var objStmNums = [];
+    Object.keys(objs).forEach(function (k) {
+      if (/\/Type\s*\/ObjStm/.test(objs[k])) objStmNums.push(+k);
+    });
+
+    var expand = Promise.all(objStmNums.map(function (num) {
+      var st = pdfStream(objs[num]);
+      var dict = st ? st.dict : '';
+      var nMatch = /\/N\s+(\d+)/.exec(dict);
+      var fMatch = /\/First\s+(\d+)/.exec(dict);
+      if (!nMatch || !fMatch) return Promise.resolve(null);
+      return pdfDecodeStream(st).then(function (txt) {
+        if (!txt) return null;
+        var count = +nMatch[1], first = +fMatch[1];
+        var header = txt.slice(0, first).trim().split(/\s+/);
+        var pairs = [];
+        for (var i = 0; i + 1 < header.length && pairs.length < count; i += 2) {
+          pairs.push({ num: +header[i], off: +header[i + 1] });
+        }
+        return pairs.map(function (p, idx) {
+          var from = first + p.off;
+          var to = idx + 1 < pairs.length ? first + pairs[idx + 1].off : txt.length;
+          return { num: p.num, body: txt.slice(from, to) };
+        });
+      }).catch(function () { return null; });
+    })).then(function (groups) {
+      groups.forEach(function (list) {
+        if (!list) return;
+        list.forEach(function (item) {
+          if (item && item.num != null && !(item.num in objs)) objs[item.num] = item.body;
+        });
+      });
+    });
+
+    return expand.then(function () {
+      var pages = pageOrder(objs);
+
+      var jobs = pages.map(function (pnum) {
+        var body = objs[pnum];
+        var resBody = pageResourcesBody(objs, body);
+        var fontRefs = fontRefsOf(resBody);
+        var refs = contentRefsOf(body);
+
+        var fontPromises = Object.keys(fontRefs).map(function (name) {
+          return collectFontInfo(fontRefs[name], objs, fontCache).then(function (info) {
+            return { name: name, info: info };
+          });
+        });
+
+        return Promise.all(fontPromises).then(function (fonts) {
+          var fontByName = {};
+          fonts.forEach(function (f) { if (f.info) fontByName[f.name] = f.info; });
+
+          return Promise.all(refs.map(function (r) {
+            return pdfDecodeStream(pdfStream(objs[r]));
+          })).then(function (streams) {
+            var text = '', miss = 0;
+            streams.forEach(function (s) {
+              if (!s) return;
+              var r = parseContentStream(s, fontByName);
+              text += r.text;
+              miss += r.miss;
+            });
+            return { text: text, miss: miss };
+          });
+        });
+      });
+
+      return Promise.all(jobs).then(function (pageTexts) {
+        var totalMiss = 0, chunks = [];
+        pageTexts.forEach(function (pt) {
+          totalMiss += pt.miss;
+          var t = tidy(pt.text).replace(/\n{3,}/g, '\n\n');
+          if (t) chunks.push(t);
+        });
+
+        var text = chunks.join('\n\n').replace(/[ \t]{2,}/g, ' ').trim();
+        var warning = null;
+        if (totalMiss > 20) {
+          warning = '部分文字使用嵌入子集字体且缺少 ToUnicode 映射，无法还原（约 ' +
+            totalMiss + ' 个字符缺失）。可先用阅读器「另存为文本」再导入。';
+        }
+        if (!text) {
+          return {
+            kind: 'error',
+            error: 'PDF 里没有可提取的文字层——多半是扫描件（整页是图片），需要 OCR 才能识别。'
+          };
+        }
+        return { text: text, warning: warning };
+      });
+    });
+  }
+
   var EXT_ROUTE = {
     doc: 'cfb', dot: 'cfb', wps: 'cfb', wpt: 'cfb', xls: 'cfb', xlt: 'cfb', et: 'cfb',
     docx: 'zip', docm: 'zip', dotx: 'zip',
     xlsx: 'zip', xlsm: 'zip', xltx: 'zip', xltm: 'zip',
     odt: 'zip', ott: 'zip', ods: 'zip', ots: 'zip',
     rtf: 'rtf', html: 'html', htm: 'html', xhtml: 'html',
-    csv: 'csv', tsv: 'tsv', json: 'json'
+    csv: 'csv', tsv: 'tsv', json: 'json', pdf: 'pdf'
   };
 
   /**
@@ -846,6 +1336,7 @@
         (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07)) return 'zip';
     if (n >= 5 && bytes[0] === 0x7B && bytes[1] === 0x5C && bytes[2] === 0x72 &&
         bytes[3] === 0x74 && bytes[4] === 0x66) return 'rtf';   // {\rtf
+    if (n >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return 'pdf';  // %PDF
     if (n >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) return 'text';
     if (n >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) return 'text';   // UTF-16LE BOM
     // 采样：出现 NUL 或控制字符比例偏高即视为二进制
@@ -892,6 +1383,25 @@
       // .txt 实际是 Word 文件：照样读得出来
       route = sniffed;
       extraWarning = '扩展名与内容不符（实为 Office 文档），已按文档解析';
+    }
+    else if (route === 'text' && sniffed === 'pdf') {
+      route = 'pdf';
+      extraWarning = '扩展名与内容不符（实为 PDF），已按 PDF 解析';
+    }
+
+    // PDF：文字层提取（扫描件没有文字层，会明确报错而不是返回空）
+    if (route === 'pdf') {
+      return extractPdf(bytes).then(function (r) {
+        if (r.kind === 'error') return r;
+        return {
+          kind: 'text',
+          text: tidy(r.text),
+          format: 'PDF 文档',
+          warning: [extraWarning, r.warning].filter(Boolean).join('；') || undefined
+        };
+      }).catch(function (e) {
+        return { kind: 'error', error: 'PDF 解析失败：' + ((e && e.message) || '未知原因') };
+      });
     }
 
     var p;

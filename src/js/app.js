@@ -22,6 +22,8 @@
     editingId: null,
     lastSummary: null,
     timeRange: null,    // 查询里解析出的时间过滤条件（由 Engine.parseTimeRange 产出）
+    dueFilter: null,    // 'overdue' | 'today' | 'soon'，来自首页提醒条
+    focusHidden: false, // 用户手动关掉提醒条（仅本次会话）
     limit: 60           // 列表一次渲染多少条；2000 条全量塞进 DOM 会明显拖慢滚动
   };
 
@@ -224,6 +226,13 @@
 
     if (state.onlyOpen) list = list.filter(function (n) { return n.type !== 'todo' || !n.done; });
 
+    if (state.dueFilter) {
+      var buckets = Engine.dueBuckets(Store.all());
+      var want = {};
+      (buckets[state.dueFilter] || []).forEach(function (n) { want[n.id] = true; });
+      list = list.filter(function (n) { return want[n.id]; });
+    }
+
     if (state.tags.length) {
       list = list.filter(function (n) {
         return state.tags.every(function (t) { return (n.tags || []).indexOf(t) >= 0; });
@@ -267,8 +276,50 @@
     });
   }
 
+  /**
+   * 首页提醒条：把逾期 / 今天到期 / 本周待办捞到列表顶上。
+   * 逾期项在「最近创建」排序里天然沉底，不给它一个固定位置就等于没提醒。
+   */
+  function renderFocusBar() {
+    var bar = $('#focusBar');
+    if (!bar) return;
+    var b = Engine.dueBuckets(Store.all());
+
+    var mode = null, tone = 'warn', html = '';
+    if (b.overdue.length) {
+      mode = 'overdue'; tone = 'danger';
+      var first = b.overdue[0];
+      var days = Math.max(1, Math.round((new Date(Engine.todayStr() + 'T00:00:00') - new Date(first.dueDate + 'T00:00:00')) / 86400000));
+      html = '有 <b>' + b.overdue.length + '</b> 项已逾期，最早一项「' + esc(clip(first.title, 16)) + '」拖了 ' + days + ' 天';
+    } else if (b.today.length) {
+      mode = 'today';
+      html = '今天有 <b>' + b.today.length + '</b> 项到期：' + esc(clip(b.today[0].title, 20)) +
+        (b.today.length > 1 ? ' 等' : '');
+    } else if (b.soon.length) {
+      mode = 'soon'; tone = 'soft';
+      html = '本周还有 <b>' + b.soon.length + '</b> 项待办，最近一项「' + esc(clip(b.soon[0].title, 16)) + '」';
+    }
+
+    if (!mode || state.focusHidden) { bar.hidden = true; return; }
+
+    bar.hidden = false;
+    bar.className = 'focus-bar tone-' + tone;
+    $('#focusText').innerHTML = html;
+
+    var active = state.dueFilter === mode;
+    var label = mode === 'overdue' ? '只看到期' : (mode === 'today' ? '只看今天' : '只看本周');
+    $('#focusActions').innerHTML = '<button class="focus-btn' + (active ? ' on' : '') + '" data-due="' + mode + '">' +
+      (active ? '✓ ' : '') + label + '</button>';
+  }
+
+  function clip(s, n) {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n) + '…' : s;
+  }
+
   function renderStream() {
     var list = currentList();
+    renderFocusBar();
     var titles = { all: '全部内容', idea: '想法', material: '资料', todo: '待办', summary: '阶段总结', star: '重点' };
     $('#streamTitle').textContent = titles[state.filter] || '全部内容';
 
@@ -290,6 +341,10 @@
     if (state.timeRange) {
       chips.push('<button class="chip on chip-time" data-untime="1" title="点击只保留关键词">时间：' +
         esc(state.timeRange.label) + '<span class="x">×</span></button>');
+    }
+    if (state.dueFilter) {
+      var dueLabel = { overdue: '已逾期', today: '今天到期', soon: '本周内' }[state.dueFilter] || '到期';
+      chips.push('<button class="chip on" data-undue="1">到期：' + dueLabel + '<span class="x">×</span></button>');
     }
     if (state.filter === 'todo') {
       var openCount = Store.all().filter(function (n) { return n.type === 'todo' && !n.done; }).length;
@@ -336,7 +391,8 @@
     var es = $('#emptyState');
     es.hidden = count > 0;
     if (count > 0) return;
-    var filtered = !!state.query.trim() || state.tags.length > 0 || state.filter !== 'all' || state.onlyOpen;
+    var filtered = !!state.query.trim() || state.tags.length > 0 || state.filter !== 'all' ||
+      state.onlyOpen || !!state.dueFilter;
     $('#emptyTitle').textContent = filtered ? '没有匹配的内容' : '这里还空着';
     $('#emptyDesc').textContent = filtered
       ? '换个关键词，或清除当前的筛选条件再看看。'
@@ -350,6 +406,8 @@
     state.query = '';
     state.tags = [];
     state.onlyOpen = false;
+    state.dueFilter = null;
+    state.timeRange = null;
     $('#searchInput').value = '';
     setSort('recent');
     renderStream();
@@ -1329,6 +1387,27 @@
       }
       if (e.target.closest('[data-onlyopen]')) {
         state.onlyOpen = !state.onlyOpen;
+        renderStream();
+      }
+      if (e.target.closest('[data-undue]')) {
+        state.dueFilter = null;
+        renderStream();
+      }
+    });
+
+    // 首页提醒条：点按钮切筛选，点 × 今天不再提示
+    $('#focusBar').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-due]');
+      if (btn) {
+        var m = btn.getAttribute('data-due');
+        state.dueFilter = state.dueFilter === m ? null : m;
+        state.limit = PAGE_SIZE;
+        renderStream();
+        return;
+      }
+      if (e.target.closest('#focusClose')) {
+        state.focusHidden = true;
+        state.dueFilter = null;
         renderStream();
       }
     });

@@ -110,6 +110,13 @@
         </div>
       </div>
 
+      <div class="focus-bar" id="focusBar" hidden>
+        <span class="focus-ico" aria-hidden="true">!</span>
+        <span class="focus-text" id="focusText"></span>
+        <span class="focus-actions" id="focusActions"></span>
+        <button class="focus-close" id="focusClose" title="今天不再提示" aria-label="今天不再提示">×</button>
+      </div>
+
       <div class="filter-bar" id="filterBar">
         <div class="chips" id="filterChips"></div>
       </div>
@@ -256,8 +263,8 @@
           </div>
           <input type="file" id="importFile" accept="application/json" hidden />
           <input type="file" id="importDocFile" multiple hidden
-                 accept=".txt,.text,.log,.md,.markdown,.rst,.tex,.srt,.vtt,.ini,.cfg,.conf,.properties,.yml,.yaml,.toml,.xml,.js,.ts,.css,.py,.java,.c,.cpp,.cs,.go,.rs,.sql,.sh,.bat,.ps1,.diff,.patch,.csv,.tsv,.html,.htm,.xhtml,.rtf,.doc,.dot,.docx,.docm,.dotx,.odt,.ott,.wps,.wpt,.xls,.xlt,.et,.xlsx,.xlsm,.xltx,.xltm,.ods,.ots,.json" />
-          <p class="hint" style="margin-top:8px">「导入文档」支持 Word（doc / docx / docm / dot / dotx）、WPS（wps / wpt）、
+                 accept=".pdf,.txt,.text,.log,.md,.markdown,.rst,.tex,.srt,.vtt,.ini,.cfg,.conf,.properties,.yml,.yaml,.toml,.xml,.js,.ts,.css,.py,.java,.c,.cpp,.cs,.go,.rs,.sql,.sh,.bat,.ps1,.diff,.patch,.csv,.tsv,.html,.htm,.xhtml,.rtf,.doc,.dot,.docx,.docm,.dotx,.odt,.ott,.wps,.wpt,.xls,.xlt,.et,.xlsx,.xlsm,.xltx,.xltm,.ods,.ots,.json" />
+          <p class="hint" style="margin-top:8px">「导入文档」支持 PDF（提取文字层，扫描件需先 OCR）、Word（doc / docx / docm / dot / dotx）、WPS（wps / wpt）、
           RTF、ODT、网页（html）、纯文本与代码（txt / md / log / xml / srt / ini 等）、表格（csv / tsv，转成表格）、
           Excel 电子表格（xls / xlt / et / xlsx / xlsm / xltx / xltm，多工作表转成 Markdown 表格）与 OpenDocument 表格（ods / ots），
           以及 json 备份。

@@ -912,9 +912,43 @@
     };
   }
 
-  function todayStr() {
-    var d = new Date();
+  function todayStr(nowMs) {
+    var d = nowMs ? new Date(nowMs) : new Date();
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  /**
+   * 未完成待办按截止日分桶。
+   * 逾期项是最该被看见、却最容易被列表淹没的东西——它们没有任何视觉权重，
+   * 排在「最近创建」的最底下。首页需要一个专门的提醒条来把它们捞出来。
+   *
+   * @param {number} [nowMs] 便于测试注入"现在"
+   * @returns {{overdue:Array, today:Array, soon:Array}}
+   */
+  function dueBuckets(notes, nowMs) {
+    var now = nowMs || Date.now();
+    var today = todayStr(now);
+    var weekLater = todayStr(now + 7 * DAY_MS);
+    var overdue = [], todayList = [], soon = [];
+
+    notes.forEach(function (n) {
+      if (n.type !== 'todo' || n.done || !n.dueDate) return;
+      if (n.dueDate < today) overdue.push(n);
+      else if (n.dueDate === today) todayList.push(n);
+      else if (n.dueDate <= weekLater) soon.push(n);
+    });
+
+    var byDue = function (a, b) {
+      if (a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
+      var pa = a.priority === 'high' ? 3 : a.priority === 'medium' ? 2 : 1;
+      var pb = b.priority === 'high' ? 3 : b.priority === 'medium' ? 2 : 1;
+      return pb - pa;
+    };
+    overdue.sort(byDue);
+    todayList.sort(byDue);
+    soon.sort(byDue);
+
+    return { overdue: overdue, today: todayList, soon: soon };
   }
 
   /** 生成阶段总结（Markdown） */
@@ -1152,6 +1186,7 @@
     stats: stats,
     buildSummary: buildSummary,
     offlineAnswer: offlineAnswer,
-    todayStr: todayStr
+    todayStr: todayStr,
+    dueBuckets: dueBuckets
   };
 })(window);

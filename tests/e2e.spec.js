@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { buildPdf } = require('./fixtures');
 
 const PORT = Number(process.env.E2E_PORT || 4321);
 const BASE = 'http://127.0.0.1:' + PORT + '/';
@@ -124,6 +125,19 @@ async function waitServer(url, timeoutMs = 15000) {
       assert(/截止 \d{4}-\d{2}-\d{2}/.test(txt), '卡片未显示截止日期：' + txt.slice(0, 200));
     });
 
+    await check('首页提醒条把快到期的待办捞到顶上', async () => {
+      await page.waitForSelector('#focusBar:not([hidden])', { timeout: 4000 });
+      const txt = await page.textContent('#focusBar');
+      assert(/本周还有|今天有|已逾期/.test(txt), '提醒条文案不对：' + txt);
+      // 点按钮应把列表筛到只剩这一项
+      await page.click('#focusBar [data-due]');
+      await page.waitForFunction(() => !!document.querySelector('#filterChips .chip'), null, { timeout: 4000 });
+      const n = await page.locator('#cardList .card').count();
+      assert(n === 1, '只看到期应只剩 1 条，实际 ' + n);
+      await page.click('#filterChips [data-undue]');
+      await page.waitForFunction(() => !document.querySelector('#filterChips [data-undue]'), null, { timeout: 4000 });
+    });
+
     await check('再记录一条想法并产生关联', async () => {
       await page.click('#btnCompose');
       await page.fill('#composeText', '路线图不要只列功能，要写清楚每个方向的投入产出比，否则评审时没法排序。');
@@ -161,6 +175,10 @@ async function waitServer(url, timeoutMs = 15000) {
       await page.waitForFunction(() => !!document.querySelector('#cardList .card.done'), null, { timeout: 4000 });
       const count = await page.textContent('[data-count="todo"]');
       assert(count === '1', '待办计数应为 1，实际 ' + count);
+    });
+
+    await check('待办全部完成后提醒条自动消失', async () => {
+      await page.waitForSelector('#focusBar[hidden]', { state: 'attached', timeout: 4000 });
     });
 
     await check('阶段总结可生成且含五个小节', async () => {
@@ -404,6 +422,24 @@ async function waitServer(url, timeoutMs = 15000) {
         Store.emptyTrash();
         window.__infoButler.renderAll();
       });
+    });
+
+    await check('可以导入 PDF 并提取出文字', async () => {
+      await page.click('#navMain .nav-item[data-view="settings"]');
+      const pdf = buildPdf({ content: 'BT /F1 12 Tf 72 720 Td (Quarterly review notes from PDF) Tj ET', flate: true });
+      await page.setInputFiles('#importDocFile', {
+        name: '季度评审.pdf', mimeType: 'application/pdf', buffer: pdf
+      });
+      await page.waitForFunction(() => {
+        const t = document.querySelector('#toast');
+        return t && !t.hidden && /导入/.test(t.textContent);
+      }, null, { timeout: 10000 });
+      const toastTxt = await page.textContent('#toast');
+      assert(/成功导入 1 篇文档/.test(toastTxt), '导入结果不对：' + toastTxt);
+      // 导入后会自动切回记录流并定位到新内容
+      await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length >= 1, null, { timeout: 5000 });
+      const body = await page.textContent('#cardList');
+      assert(/Quarterly review notes/.test(body), '导入的正文应出现在列表里：' + body.slice(0, 160));
     });
 
     if (WANT_SHOTS) {
