@@ -370,6 +370,67 @@
       return removed;
     },
 
+    /**
+     * 批量改。逐条调用 update() 会做 N 次快照 + N 次整库序列化，
+     * 选 200 条就是 200 次全量 JSON.stringify——必须合成一次事务。
+     * @param {Function|object} patch 传入对象则整体覆盖，传入函数则按条计算
+     * @returns {number} 实际改动的条数
+     */
+    batchUpdate: function (ids, patch) {
+      if (!ids || !ids.length) return 0;
+      var want = {};
+      ids.forEach(function (id) { want[id] = true; });
+      var targets = this.notes.filter(function (n) { return want[n.id]; });
+      if (!targets.length) return 0;
+
+      this.snapshot();
+      var now = Date.now();
+      var self = this;
+      targets.forEach(function (n) {
+        var p = typeof patch === 'function' ? patch(n) : patch;
+        Object.keys(p || {}).forEach(function (k) { n[k] = p[k]; });
+        if (n.content && n.content.length > MAX_CONTENT) n.content = n.content.slice(0, MAX_CONTENT);
+        n.updatedAt = now;
+        if (p && p.done === true && !n.doneAt) n.doneAt = now;
+        if (p && p.done === false) n.doneAt = null;
+      });
+      self._index = null;
+      this.saveNotes();
+      return targets.length;
+    },
+
+    /**
+     * 批量移入回收站。语义必须与 remove() 完全一致（从活跃列表移出 + 写进回收站 +
+     * 剔除双向关联），否则会出现"看着删了、回收站里却没有"的幽灵记录。
+     * 差别只在于整个过程只快照、只落盘一次。
+     */
+    batchRemove: function (ids) {
+      if (!ids || !ids.length) return 0;
+      var want = {};
+      ids.forEach(function (id) { want[id] = true; });
+      var targets = this.notes.filter(function (n) { return want[n.id]; });
+      if (!targets.length) return 0;
+
+      this.snapshot();
+      var now = Date.now();
+      targets.forEach(function (n) { n.deletedAt = now; });
+
+      // 原地 splice，保持 notes 的数组引用不变（外部可能还持有它）
+      for (var i = this.notes.length - 1; i >= 0; i--) {
+        if (want[this.notes[i].id]) this.notes.splice(i, 1);
+      }
+      this._index = null;
+
+      this.notes.forEach(function (n) {
+        n.related = (n.related || []).filter(function (r) { return !want[r.id]; });
+      });
+
+      var existing = this.trash().filter(function (n) { return !want[n.id]; });
+      this._writeTrash(targets.concat(existing));
+      this.saveNotes();
+      return targets.length;
+    },
+
     /* ---------- 查询辅助 ---------- */
     countBy: function (type) {
       if (type === 'all') return this.notes.length;

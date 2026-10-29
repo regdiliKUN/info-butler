@@ -442,6 +442,41 @@ async function waitServer(url, timeoutMs = 15000) {
       assert(/Quarterly review notes/.test(body), '导入的正文应出现在列表里：' + body.slice(0, 160));
     });
 
+    await check('批量选择后可以一次改类型', async () => {
+      await page.click('#searchClear');
+      await page.waitForFunction(() => document.querySelectorAll('#cardList .card').length >= 3, null, { timeout: 4000 });
+      await page.click('#btnSelectMode');
+      await page.waitForSelector('#cardList .card-pick', { state: 'attached', timeout: 4000 });
+      const cards = page.locator('#cardList .card');
+      await cards.nth(0).click();
+      await cards.nth(1).click();
+      await page.waitForFunction(() => /已选 2 项/.test(document.querySelector('#batchCount').textContent), null, { timeout: 4000 });
+      await page.click('#batchBar [data-batch="type-material"]');
+      await page.waitForFunction(() => {
+        const first = document.querySelector('#cardList .card');
+        return first && /资料/.test(first.querySelector('.type-badge').textContent);
+      }, null, { timeout: 4000 });
+    });
+
+    await check('批量加标签走自绘对话框而不是原生 prompt', async () => {
+      await page.click('#batchBar [data-batch="tag"]');
+      await page.waitForSelector('#askModal:not([hidden])', { timeout: 4000 });
+      const tag = '批量测试标签';
+      await page.fill('#askInput', tag);
+      await page.press('#askInput', 'Enter');
+      await page.waitForSelector('#askModal[hidden]', { state: 'attached', timeout: 4000 });
+      await page.waitForFunction((t) => {
+        const el = document.querySelector('#toast');
+        return el && !el.hidden && el.textContent.indexOf(t) >= 0;
+      }, tag, { timeout: 4000 });
+      const txt = await page.textContent('#cardList');
+      assert(txt.includes(tag), '标签应出现在卡片上');
+      await page.click('#batchCancel');
+      await page.waitForSelector('#batchBar[hidden]', { state: 'attached', timeout: 4000 });
+      const picks = await page.locator('#cardList .card-pick').count();
+      assert(picks === 0, '退出批量后不应残留选择框');
+    });
+
     if (WANT_SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');

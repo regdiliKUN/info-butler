@@ -703,3 +703,34 @@ a { cursor: pointer; color: inherit; text-decoration: none; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .topbar { padding: 0 12px; gap: 8px; }
 }
+
+/* ---------------- 批量操作 ---------------- */
+.card-pick {
+  flex: 0 0 auto; width: 18px; height: 18px; border-radius: 6px;
+  border: 1.5px solid var(--line-strong, var(--line));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1; color: transparent;
+  margin-right: 2px;
+}
+.card-pick:hover { border-color: var(--accent); }
+.card-pick.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.card.selected { border-color: rgba(108, 140, 255, .55); background: var(--accent-soft); }
+
+.batch-bar {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 10px 0 4px; padding: 9px 12px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow);
+}
+.batch-bar[hidden] { display: none; }
+.batch-count { font-size: 13px; color: var(--txt-2); flex: 0 0 auto; }
+.batch-actions { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.batch-actions .ghost-btn { font-size: 12px; padding: 4px 10px; }
+.batch-bar [disabled] { opacity: .4; cursor: not-allowed; }
+
+/* ---------------- 输入对话框 ---------------- */
+.ask-box { max-width: 440px; }
+.ask-label { display: block; font-size: 13px; color: var(--txt-2); margin-bottom: 8px; }
+.ask-box .input { width: 100%; }
+.ask-box .hint { margin-top: 8px; }

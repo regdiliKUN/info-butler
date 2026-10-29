@@ -107,6 +107,7 @@
           <button class="ghost-btn" id="btnAutoRelate">重新关联</button>
           <button class="ghost-btn" id="btnExtract">提取重点</button>
           <button class="ghost-btn primary-ghost" id="btnOrganizeTodos">整理待办</button>
+          <button class="ghost-btn" id="btnSelectMode" aria-pressed="false">批量</button>
         </div>
       </div>
 
@@ -119,6 +120,19 @@
 
       <div class="filter-bar" id="filterBar">
         <div class="chips" id="filterChips"></div>
+      </div>
+
+      <div class="batch-bar" id="batchBar" hidden>
+        <span class="batch-count" id="batchCount">已选 0 项</span>
+        <div class="batch-actions">
+          <button class="ghost-btn" data-batch="type-idea">标为想法</button>
+          <button class="ghost-btn" data-batch="type-material">标为资料</button>
+          <button class="ghost-btn" data-batch="type-todo">标为待办</button>
+          <button class="ghost-btn" data-batch="pin">设为重点</button>
+          <button class="ghost-btn" data-batch="tag">加标签</button>
+          <button class="ghost-btn danger" data-batch="delete">删除</button>
+        </div>
+        <button class="ghost-btn" id="batchCancel">退出批量</button>
       </div>
 
       <div class="card-list" id="cardList" role="list" aria-label="记录列表"></div>
@@ -377,6 +391,26 @@
 <div class="drawer" id="detailDrawer" hidden>
   <div class="drawer-mask" data-close="1"></div>
   <div class="drawer-box" id="detailBox" role="dialog" aria-modal="true" aria-label="记录详情"></div>
+</div>
+
+<!-- ============ 输入对话框（替代原生 prompt） ============ -->
+<div class="modal" id="askModal" hidden>
+  <div class="modal-mask" data-ask-close="1"></div>
+  <div class="modal-box ask-box" role="dialog" aria-modal="true" aria-labelledby="askTitle">
+    <div class="modal-head">
+      <div class="modal-title" id="askTitle">输入</div>
+      <button class="icon-btn" data-ask-close="1" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <label class="ask-label" id="askLabel" for="askInput"></label>
+      <input id="askInput" class="input wide" autocomplete="off" />
+      <div class="hint small" id="askHint" hidden></div>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost-btn" data-ask-close="1">取消</button>
+      <button class="solid-btn" id="askOk">确定</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

@@ -24,6 +24,8 @@
     timeRange: null,    // 查询里解析出的时间过滤条件（由 Engine.parseTimeRange 产出）
     dueFilter: null,    // 'overdue' | 'today' | 'soon'，来自首页提醒条
     focusHidden: false, // 用户手动关掉提醒条（仅本次会话）
+    selectMode: false,  // 批量选择模式
+    selected: {},       // id → true
     limit: 60           // 列表一次渲染多少条；2000 条全量塞进 DOM 会明显拖慢滚动
   };
 
@@ -320,6 +322,7 @@
   function renderStream() {
     var list = currentList();
     renderFocusBar();
+    renderBatchBar();
     var titles = { all: '全部内容', idea: '想法', material: '资料', todo: '待办', summary: '阶段总结', star: '重点' };
     $('#streamTitle').textContent = titles[state.filter] || '全部内容';
 
@@ -364,6 +367,124 @@
   }
 
   /** 分批渲染的"继续加载"。列表很长时，滚动到底部自动补一屏 */
+  /** 批量操作条：只在选择模式下出现，选中 0 项时按钮全部禁用 */
+  /* ---------------- 输入对话框 ---------------- */
+  /* 原生 prompt 会阻塞整个页面、样式无法控制、在部分环境还会被浏览器拦截；
+   * 这里用一个和整体视觉一致的弹层替代。 */
+  var askState = null;
+
+  function askText(opts) {
+    askState = opts || {};
+    $('#askTitle').textContent = askState.title || '输入';
+    $('#askLabel').textContent = askState.label || '';
+    $('#askHint').textContent = askState.hint || '';
+    $('#askHint').hidden = !askState.hint;
+    var inp = $('#askInput');
+    inp.value = askState.value || '';
+    inp.placeholder = askState.placeholder || '';
+    $('#askModal').hidden = false;
+    setTimeout(function () {
+      if ($('#askModal').hidden) return;
+      inp.focus();
+      inp.select();
+    }, 30);
+  }
+
+  function closeAsk() {
+    $('#askModal').hidden = true;
+    askState = null;
+  }
+
+  function submitAsk() {
+    if (!askState) return;
+    var v = $('#askInput').value;
+    var cb = askState.onOk;
+    closeAsk();
+    if (cb) cb(v);
+  }
+
+  function renderBatchBar() {
+    var bar = $('#batchBar');
+    if (!bar) return;
+    bar.hidden = !state.selectMode;
+
+    var toggle = $('#btnSelectMode');
+    if (toggle) {
+      toggle.classList.toggle('on', state.selectMode);
+      toggle.setAttribute('aria-pressed', state.selectMode ? 'true' : 'false');
+      toggle.textContent = state.selectMode ? '退出批量' : '批量';
+    }
+    if (!state.selectMode) return;
+
+    var n = Object.keys(state.selected).length;
+    $('#batchCount').textContent = n ? '已选 ' + n + ' 项' : '点记录卡片选择';
+    $$('#batchBar [data-batch]').forEach(function (b) { b.disabled = n === 0; });
+  }
+
+  function toggleSelect(id) {
+    if (!id) return;
+    if (state.selected[id]) delete state.selected[id];
+    else state.selected[id] = true;
+    renderStream();
+  }
+
+  function exitSelectMode() {
+    state.selectMode = false;
+    state.selected = {};
+    renderStream();
+  }
+
+  function runBatch(action) {
+    var ids = Object.keys(state.selected);
+    if (!ids.length) return;
+
+    if (action === 'delete') {
+      if (!confirm('把选中的 ' + ids.length + ' 条记录移入回收站？可以随时恢复。')) return;
+      var removed = Store.batchRemove(ids);
+      Engine.relate(Store.all());
+      Store.saveNotes();
+      exitSelectMode();
+      renderAll();
+      toast('已移入回收站 ' + removed + ' 条', '撤销', function () {
+        Store.undo(); Engine.relate(Store.all()); Store.saveNotes(); renderAll();
+      });
+      return;
+    }
+
+    if (action === 'tag') {
+      askText({
+        title: '批量加标签',
+        label: '给选中的 ' + ids.length + ' 条记录加一个标签',
+        placeholder: '如：Q4、待读、客户反馈',
+        onOk: function (raw) {
+          var t = String(raw || '').trim().slice(0, 16);
+          if (!t) return;
+          var count = Store.batchUpdate(ids, function (n) {
+            var tags = (n.tags || []).slice();
+            if (tags.indexOf(t) < 0) tags.unshift(t);
+            return { tags: tags.slice(0, 8) };
+          });
+          Engine.relate(Store.all());
+          Store.saveNotes();
+          renderAll();
+          toast('已给 ' + count + ' 条加上标签「' + t + '」');
+        }
+      });
+      return;
+    }
+
+    var patch = null;
+    if (action.indexOf('type-') === 0) patch = { type: action.slice(5) };
+    else if (action === 'pin') patch = { pinned: true };
+    if (!patch) return;
+
+    var changed = Store.batchUpdate(ids, patch);
+    Engine.relate(Store.all());
+    Store.saveNotes();
+    renderAll();
+    toast('已更新 ' + changed + ' 条');
+  }
+
   function renderLoadMore(total, shown) {
     var wrap = $('#loadMoreWrap');
     if (!wrap) return;
@@ -442,8 +563,17 @@
         (overdue ? '已逾期 ' : '截止 ') + esc(n.dueDate) + '</span>';
     }
 
-    return '<article class="card' + (n.pinned ? ' pinned' : '') + (n.done ? ' done' : '') + '" data-id="' + n.id + '" role="listitem">' +
+    var picked = !!state.selected[n.id];
+    var pick = state.selectMode
+      ? '<button class="card-pick' + (picked ? ' on' : '') + '" data-pick="' + n.id + '"' +
+        ' aria-pressed="' + (picked ? 'true' : 'false') + '"' +
+        ' aria-label="' + (picked ? '取消选择' : '选择') + '这条记录">' + (picked ? '✓' : '') + '</button>'
+      : '';
+
+    return '<article class="card' + (n.pinned ? ' pinned' : '') + (n.done ? ' done' : '') +
+      (picked ? ' selected' : '') + '" data-id="' + n.id + '" role="listitem">' +
       '<div class="card-top">' +
+      pick +
       (n.type === 'todo'
         ? '<button class="todo-check' + (n.done ? ' on' : '') + '" data-act="toggle" data-id="' + n.id + '"' +
         ' role="checkbox" aria-checked="' + (n.done ? 'true' : 'false') + '"' +
@@ -864,7 +994,7 @@
 
   /* ---------------- 无障碍：焦点管理 ---------------- */
 
-  var LAYER_IDS = ['palette', 'composeModal', 'detailDrawer'];
+  var LAYER_IDS = ['palette', 'askModal', 'composeModal', 'detailDrawer'];
   var FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
   function visibleLayer() {
@@ -1421,6 +1551,23 @@
     $('#emptyCompose').addEventListener('click', function () { openCompose(); });
     $('#emptyClear').addEventListener('click', clearFilters);
     $('#btnSaveNote').addEventListener('click', saveNote);
+
+    $('#btnSelectMode').addEventListener('click', function () {
+      if (state.selectMode) exitSelectMode();
+      else { state.selectMode = true; state.selected = {}; renderStream(); }
+    });
+    $('#batchCancel').addEventListener('click', exitSelectMode);
+    $('#askModal').addEventListener('click', function (e) {
+      if (e.target.closest('[data-ask-close]')) closeAsk();
+    });
+    $('#askOk').addEventListener('click', submitAsk);
+    $('#askInput').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); submitAsk(); }
+    });
+    $('#batchBar').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-batch]');
+      if (b && !b.disabled) runBatch(b.getAttribute('data-batch'));
+    });
     $('#typePicker').addEventListener('click', function (e) {
       var b = e.target.closest('.type-btn');
       if (!b) return;
@@ -1585,16 +1732,22 @@
       var act = btn.getAttribute('data-tag-act');
 
       if (act === 'rename') {
-        var to = window.prompt('把标签「' + tag + '」改成（填一个已存在的标签即合并）：', tag);
-        if (to == null) return;
-        to = String(to).trim();
-        if (!to || to === tag) return;
-        var n = Store.renameTag(tag, to);
-        // 当前筛选里如果还挂着重命名前的标签，跟着换掉，否则会筛出空列表
-        var idx = state.tags.indexOf(tag);
-        if (idx >= 0) state.tags[idx] = to;
-        renderAll(); fillSettings();
-        toast(n ? ('已更新 ' + n + ' 条记录的标签') : '没有记录使用这个标签');
+        askText({
+          title: '重命名标签',
+          label: '把「' + tag + '」改成',
+          value: tag,
+          hint: '填一个已存在的标签即合并到它',
+          onOk: function (raw) {
+            var to = String(raw || '').trim();
+            if (!to || to === tag) return;
+            var n = Store.renameTag(tag, to);
+            // 当前筛选里如果还挂着重命名前的标签，跟着换掉，否则会筛出空列表
+            var idx = state.tags.indexOf(tag);
+            if (idx >= 0) state.tags[idx] = to;
+            renderAll(); fillSettings();
+            toast(n ? ('已更新 ' + n + ' 条记录的标签') : '没有记录使用这个标签');
+          }
+        });
         return;
       }
 
@@ -1771,6 +1924,7 @@
       if (e.key === 'Tab') trapTab(e);
 
       if (e.key === 'Escape') {
+        if (!$('#askModal').hidden) { closeAsk(); return; }
         if (!$('#palette').hidden) { closePalette(); return; }
         $('#composeModal').hidden = true;
         $('#detailDrawer').hidden = true;
@@ -1826,6 +1980,15 @@
   }
 
   function onCardClick(e) {
+    var pick = e.target.closest('[data-pick]');
+    if (pick) { toggleSelect(pick.getAttribute('data-pick')); return; }
+
+    // 选择模式下，点卡片任意位置都是勾选，避免误开详情
+    if (state.selectMode) {
+      var card = e.target.closest('.card');
+      if (card && card.getAttribute('data-id')) { toggleSelect(card.getAttribute('data-id')); return; }
+    }
+
     var open = e.target.closest('[data-open]');
     if (open && !e.target.closest('[data-act]')) { openDetail(open.getAttribute('data-open')); return; }
 
