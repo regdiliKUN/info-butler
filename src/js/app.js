@@ -1016,7 +1016,14 @@
     var items = Array.prototype.filter.call(layer.querySelectorAll(FOCUSABLE), function (el) {
       return el.offsetParent !== null;
     });
-    if (!items.length) return;
+    // 弹层刚打开、内容还没渲染完时里面一个可聚焦元素都没有。
+    // 这时如果直接 return，Tab 会跑出弹层——键盘用户就"掉出"对话框了。
+    if (!items.length) {
+      e.preventDefault();
+      if (!layer.hasAttribute('tabindex')) layer.setAttribute('tabindex', '-1');
+      layer.focus();
+      return;
+    }
     var first = items[0], last = items[items.length - 1];
     var cur = document.activeElement;
 
@@ -1041,7 +1048,12 @@
         } else if (lastFocus && lastFocus !== document.body && lastFocus.focus) {
           var back = lastFocus;
           lastFocus = null;
-          try { back.focus(); } catch (err) { /* 元素可能已被重渲染移除 */ }
+          // 触发元素可能在这期间被列表重渲染掉了：焦点交还给一个仍然存在的落点，
+          // 否则键盘用户会直接掉到 <body>，得从头 Tab 一遍。
+          if (!document.body.contains(back)) {
+            back = document.querySelector('#cardList .card-title') || document.querySelector('#searchInput') || null;
+          }
+          try { if (back) back.focus(); } catch (err) { /* 忽略 */ }
         }
       }).observe(el, { attributes: true, attributeFilter: ['hidden'] });
     });
