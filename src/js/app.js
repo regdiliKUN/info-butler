@@ -269,6 +269,22 @@
 
   function rankPrio(n) { return n.priority === 'high' ? 3 : n.priority === 'medium' ? 2 : 1; }
 
+  /**
+   * 把关键词落到列表上。
+   * 搜索框、命令面板的「在列表里搜索」、最近搜索都走这一条路径，
+   * 否则会出现「从面板搜的结果没切到相关度排序」这类不一致。
+   */
+  function runSearch(v) {
+    state.query = v;
+    state.limit = PAGE_SIZE;        // 换关键词后重新从第一页看起
+    var si = $('#searchInput');
+    if (si) si.value = v;
+    if (state.view !== 'stream') switchView('stream', state.filter);
+    else renderStream();
+    if (state.query.trim() && state.sort === 'recent') setSort('relevance');
+    else if (!state.query.trim() && state.sort === 'relevance') setSort('recent');
+  }
+
   /** 统一切换排序方式，按钮高亮与状态只在这里维护，避免多处各改一半 */
   function setSort(sort) {
     state.sort = sort;
@@ -900,17 +916,129 @@
     };
 
     if (AI.ready()) {
-      // 带上最近两轮对话，让「再详细点 / 换种说法」这类追问有上下文
-      AI.answer(question, hits, Store.config.userName, chatHistory.slice(-2)).then(function (a) {
-        render(a, true);
+      // 流式：边收边渲染。长回答以前要等整段生成完（3–8 秒白屏），现在首字通常在 0.5 秒内出现。
+      // 重绘按 50ms 节流：逐 token 重跑 markdown 解析在长回答上会把主线程拖住。
+      var body = typing.querySelector('.msg-body');
+      var streamed = '';
+      var lastPaint = 0;
+      var paint = function (full) {
+        body.innerHTML = mdToHtml(full) + '<span class="stream-caret" aria-hidden="true"></span>';
+        $('#chatLog').scrollTop = $('#chatLog').scrollHeight;
+      };
+
+      AI.answerStream(question, hits, Store.config.userName, chatHistory.slice(-2), function (d, full) {
+        streamed = full;
+        var now = Date.now();
+        if (now - lastPaint < 50) return;
+        lastPaint = now;
+        paint(full);
+      }).then(function (full) {
+        render(full, true);
       }).catch(function (err) {
-        console.warn('问答失败，回退本地', err);
-        toast('大模型调用失败，已用本地检索作答');
-        render(Engine.offlineAnswer(question, hits), false);
+        console.warn('流式问答失败', err);
+        if (streamed) {
+          // 已经显示出一部分了，整段换成本地答案会让用户以为内容被吞掉
+          render(streamed + '\n\n（回答中断：' + err.message + '）', true);
+          toast('回答中断：' + err.message);
+        } else {
+          toast('大模型调用失败，已用本地检索作答');
+          render(Engine.offlineAnswer(question, hits), false);
+        }
       });
     } else {
       setTimeout(function () { render(Engine.offlineAnswer(question, hits), false); }, 320);
     }
+  }
+
+  /* ---------------- 到期系统通知 ---------------- */
+
+  function notifySupported() {
+    return typeof window !== 'undefined' && typeof window.Notification === 'function';
+  }
+
+  function notifyPermission() {
+    if (!notifySupported()) return 'unsupported';
+    return window.Notification.permission || 'default';
+  }
+
+  function updateNotifyHint() {
+    var el = $('#notifyHint');
+    if (!el) return;
+    if (!notifySupported()) {
+      el.textContent = '当前浏览器不支持系统通知，首页的到期提醒条仍然可用。';
+      return;
+    }
+    var p = notifyPermission();
+    if (p === 'granted') {
+      el.textContent = '已授权。每天最多提醒一次，只报最紧急的一档（逾期 > 今天 > 本周）；通知只在本机弹出，不联网。';
+    } else if (p === 'denied') {
+      el.textContent = '浏览器已拒绝通知权限。需要点地址栏左侧的站点图标，把「通知」改回允许，再重新勾选。';
+    } else {
+      el.textContent = '默认关闭。勾选时会请求浏览器授权，每天最多提醒一次，通知只在本机弹出，不联网。';
+    }
+  }
+
+  /**
+   * 发到期通知。
+   * 首页提醒条只在应用打开时有用，用户一天不开就一天不知道——系统通知是唯一能推到应用之外的手段。
+   * @param {boolean} [force] 设置页「测试通知」用：跳过去重，但没有到期待办时返回 false
+   * @returns {boolean} 是否真的弹出了通知
+   */
+  function notifyDue(force) {
+    if (!notifySupported() || notifyPermission() !== 'granted') return false;
+    if (!force && !Store.config.notifyDue) return false;
+
+    var digest = Engine.dueDigest(Engine.dueBuckets(Store.all()));
+    if (!digest) return false;
+
+    var today = Engine.todayStr();
+    if (!force && Store.notifyState().date === today) return false;   // 每天最多一次
+
+    try {
+      // tag 相同 → 新通知替换旧通知，不会在通知中心堆一列重复项
+      new window.Notification(digest.title, { body: digest.body, tag: 'info-butler-due' });
+    } catch (e) {
+      console.warn('通知发送失败', e);
+      return false;
+    }
+    Store.markNotified(today, digest.level);
+    return true;
+  }
+
+  /** 设置页的测试按钮：不管有没有到期待办，都发一条样例，验证授权链路通不通 */
+  function testNotify() {
+    if (!notifySupported()) { toast('当前浏览器不支持系统通知'); return false; }
+    var send = function () {
+      try {
+        new window.Notification('信息管家 · 通知已开启', {
+          body: '这是测试通知。以后有逾期或当天到期的待办，会在这里提醒你。',
+          tag: 'info-butler-test'
+        });
+        return true;
+      } catch (e) {
+        toast('通知发送失败：' + ((e && e.message) || e));
+        return false;
+      }
+    };
+    if (notifyPermission() === 'granted') {
+      var ok = send();
+      if (ok) toast('已发送测试通知');
+      updateNotifyHint();
+      return ok;
+    }
+    var settled = false;
+    var done = function (p) {
+      if (settled) return;
+      settled = true;
+      if (p === 'granted') { if (send()) toast('已发送测试通知'); }
+      else toast(p === 'denied' ? '浏览器拒绝了通知权限，请到站点设置里允许' : '没有获得通知权限');
+      updateNotifyHint();
+    };
+    try {
+      var r = window.Notification.requestPermission(done);
+      if (r && typeof r.then === 'function') r.then(done);
+    } catch (e) { done('denied'); }
+    return false;
   }
 
   /* ---------------- 设置 ---------------- */
@@ -926,6 +1054,11 @@
     $('#cfgAutoTag').checked = !!c.autoTag;
     if ($('#cfgTheme')) $('#cfgTheme').value = c.theme || 'auto';
     if ($('#cfgDensity')) $('#cfgDensity').value = c.density || 'cozy';
+    if ($('#cfgNotifyDue')) {
+      // 权限被用户在浏览器里撤回时，勾选框不该还显示为已开启
+      $('#cfgNotifyDue').checked = !!c.notifyDue && notifyPermission() === 'granted';
+    }
+    updateNotifyHint();
     if ($('#cfgFontSize')) {
       var fs = Number(c.fontSize) || 14;
       $('#cfgFontSize').value = fs;
@@ -1198,6 +1331,14 @@
       {
         ico: '?', label: '查看快捷键', kw: 'help shortcut 快捷键 帮助',
         run: function () { openPalette('快捷键'); }
+      },
+      {
+        ico: '⌫', label: '清除搜索历史', kw: 'recent 最近 搜索历史 清空',
+        run: function () {
+          var n = Store.recentQueries().length;
+          Store.clearQueries();
+          toast(n ? ('已清除 ' + n + ' 条搜索历史') : '还没有搜索历史');
+        }
       }
     ];
   }
@@ -1205,10 +1346,26 @@
   function paletteResults(q) {
     var query = String(q || '').trim();
     var cmds = paletteCommands();
-    if (!query) return cmds.slice(0, 10);
+
+    // 空输入时先给「最近搜过什么」：这是命令面板最高频的复用场景
+    if (!query) {
+      var recents = Store.recentQueries().map(function (r) {
+        return {
+          ico: '⟲', label: r, hint: '最近搜索',
+          run: function () { Store.pushQuery(r); runSearch(r); }
+        };
+      });
+      return recents.concat(cmds).slice(0, 12);
+    }
 
     var out = cmds.filter(function (c) {
       return c.label.indexOf(query) >= 0 || (c.kw || '').indexOf(query) >= 0;
+    });
+
+    // 关键词不只是用来匹配命令，也要能一键落到列表里（带上时间词等表达式）
+    out.push({
+      ico: '⌕', label: '在列表里搜索「' + query + '」', hint: '搜索',
+      run: function () { Store.pushQuery(query); runSearch(query); }
     });
 
     // 命令之外也直接搜记录：用户按 Ctrl+K 时往往就是想找某条笔记
@@ -1219,7 +1376,7 @@
           ico: '·',
           label: h.note.title || '（无标题）',
           hint: typeLabel(h.note.type),
-          run: function () { openDetail(h.note.id); }
+          run: function () { Store.pushQuery(query); openDetail(h.note.id); }
         });
       });
     }
@@ -1310,6 +1467,10 @@
     if ($('#cfgTheme')) Store.config.theme = $('#cfgTheme').value;
     if ($('#cfgDensity')) Store.config.density = $('#cfgDensity').value;
     if ($('#cfgFontSize')) Store.config.fontSize = Number($('#cfgFontSize').value) || 14;
+    if ($('#cfgNotifyDue')) {
+      // 只有真的拿到授权才算开启，否则存下 true 会变成「以为开了、其实从没弹过」
+      Store.config.notifyDue = $('#cfgNotifyDue').checked && notifyPermission() === 'granted';
+    }
     Store.saveConfig();
     applyTheme();
   }
@@ -1480,14 +1641,7 @@
     // 搜索：防抖，避免逐字触发全量检索；清空后自动退回「最近」排序
     var si = $('#searchInput');
     var searchTimer = null;
-    var applyQuery = function (v) {
-      state.query = v;
-      state.limit = PAGE_SIZE;        // 换关键词后重新从第一页看起
-      if (state.view !== 'stream') switchView('stream', state.filter);
-      else renderStream();
-      if (state.query.trim() && state.sort === 'recent') setSort('relevance');
-      else if (!state.query.trim() && state.sort === 'relevance') setSort('recent');
-    };
+    var applyQuery = function (v) { runSearch(v); };
     si.addEventListener('input', function () {
       var v = si.value;
       clearTimeout(searchTimer);
@@ -1668,6 +1822,46 @@
     $('#cfgUserName').addEventListener('change', readSettings);
     $('#cfgDomains').addEventListener('change', readSettings);
     $('#cfgAutoTag').addEventListener('change', readSettings);
+
+    // 到期通知：勾选时立刻要授权，不能等点"保存偏好"——授权弹窗必须由用户手势触发
+    $('#cfgNotifyDue').addEventListener('change', function (e) {
+      var box = e.target;
+      if (!box.checked) {
+        Store.config.notifyDue = false;
+        Store.saveConfig();
+        updateNotifyHint();
+        toast('已关闭到期通知');
+        return;
+      }
+      if (!notifySupported()) {
+        box.checked = false;
+        toast('当前浏览器不支持系统通知');
+        updateNotifyHint();
+        return;
+      }
+      var settled = false;
+      var finish = function (p) {
+        if (settled) return;
+        settled = true;
+        if (p === 'granted') {
+          Store.config.notifyDue = true;
+          Store.saveConfig();
+          toast('已开启到期通知');
+        } else {
+          box.checked = false;
+          Store.config.notifyDue = false;
+          Store.saveConfig();
+          toast(p === 'denied' ? '浏览器拒绝了通知权限，可到站点设置里允许后再试' : '没有获得通知权限，已保持关闭');
+        }
+        updateNotifyHint();
+      };
+      if (notifyPermission() === 'granted') { finish('granted'); return; }
+      try {
+        var r = window.Notification.requestPermission(finish);
+        if (r && typeof r.then === 'function') r.then(finish);
+      } catch (err) { finish('denied'); }
+    });
+    $('#btnTestNotify').addEventListener('click', function () { testNotify(); });
 
     // 外观：三个控件都即时生效，不需要再点"保存"
     $('#btnTheme').addEventListener('click', toggleTheme);
@@ -2125,6 +2319,10 @@
     if (!Store.all().length) {
       $('#emptyState').hidden = false;
     }
+
+    // 到期通知放在首屏渲染之后：启动时第一要务是把内容画出来，通知晚 1.5 秒无感
+    if (Store.config.notifyDue) setTimeout(function () { notifyDue(); }, 1500);
+
     console.log('[信息管家] 已启动，记录数：' + Store.all().length + '，大模型：' + (AI.ready() ? '已接入' : '本地引擎'));
   }
 
@@ -2143,6 +2341,8 @@
     switchView: function (v, f) { switchView(v, f); },
     openPalette: function (q) { openPalette(q); },
     applyTheme: function () { applyTheme(); },
+    notifyDue: function (force) { return notifyDue(force); },
+    testNotify: function () { return testNotify(); },
     version: '1.1.0'
   };
 })();

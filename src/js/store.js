@@ -17,6 +17,10 @@
   var KEY_TRASH = 'info_butler_trash_v1';
   var KEY_CONF = 'info_butler_config_v1';
   var KEY_META = 'info_butler_meta_v1';
+  var KEY_NOTIFY = 'info_butler_notify_v1';
+  var KEY_RECENT = 'info_butler_recent_q_v1';
+
+  var RECENT_MAX = 8;                                       // 最近搜索最多留 8 条
 
   var SCHEMA_VERSION = 2;
 
@@ -30,7 +34,8 @@
     autoTag: true,
     theme: 'auto',        // auto | dark | light
     density: 'cozy',      // cozy | compact
-    fontSize: 14
+    fontSize: 14,
+    notifyDue: false      // 到期系统通知：默认关闭，需要用户显式开启并授权
   };
 
   var PROVIDERS = {
@@ -171,6 +176,46 @@
         if (this.onError) this.onError('配置保存失败：本地存储可能已满。');
         return false;
       }
+    },
+
+    /**
+     * 到期通知的去重状态。
+     * 存在独立 key 里而不是配置里：它属于「运行时痕迹」，不该跟着备份导出到另一台机器，
+     * 否则换机导入后第一天就收不到提醒。
+     */
+    notifyState: function () {
+      return safeParse(localStorage.getItem(KEY_NOTIFY), {}) || {};
+    },
+
+    markNotified: function (date, sig) {
+      try {
+        localStorage.setItem(KEY_NOTIFY, JSON.stringify({ date: date, sig: sig || '', at: Date.now() }));
+      } catch (e) { /* 写不进去顶多重复提醒一次，不值得打断用户 */ }
+    },
+
+    /**
+     * 最近搜索。
+     * 独立 key、独立生命周期：不进备份、不占配额预算，清掉也只是少了几个快捷入口。
+     * 单字查询（"我""a"）没有复用价值，直接丢弃，否则历史会被噪声填满。
+     */
+    recentQueries: function () {
+      var v = safeParse(localStorage.getItem(KEY_RECENT), []);
+      if (!Array.isArray(v)) return [];
+      return v.filter(function (s) { return typeof s === 'string' && s.trim(); }).slice(0, RECENT_MAX);
+    },
+
+    pushQuery: function (q) {
+      var s = String(q == null ? '' : q).replace(/\s+/g, ' ').trim();
+      if (s.length < 2) return this.recentQueries();
+      var list = this.recentQueries().filter(function (x) { return x !== s; });
+      list.unshift(s.slice(0, 60));
+      list = list.slice(0, RECENT_MAX);
+      try { localStorage.setItem(KEY_RECENT, JSON.stringify(list)); } catch (e) { /* 配额满不影响搜索本身 */ }
+      return list;
+    },
+
+    clearQueries: function () {
+      try { localStorage.removeItem(KEY_RECENT); } catch (e) { /* ignore */ }
     },
 
     /** 估算当前占用（字节），用于设置页展示与提前预警 */

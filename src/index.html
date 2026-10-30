@@ -330,6 +330,14 @@
               <span>记录时自动分类与打标签</span>
             </label>
           </div>
+          <div class="form-row inline">
+            <label class="switch">
+              <input type="checkbox" id="cfgNotifyDue" />
+              <span>待办到期时发系统通知</span>
+            </label>
+            <button class="ghost-btn" id="btnTestNotify">发一条测试通知</button>
+          </div>
+          <p class="hint small" id="notifyHint">默认关闭。开启后每天最多提醒一次，只报最紧急的一档（逾期 &gt; 今天 &gt; 本周）。首次开启需要浏览器授权，通知只在本机弹出，不联网。</p>
           <div class="form-row">
             <label>主题</label>
             <select id="cfgTheme" class="select wide">

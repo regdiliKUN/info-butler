@@ -349,9 +349,16 @@ async function waitServer(url, timeoutMs = 15000) {
 
     await check('Tab 焦点被困在弹层内，关闭后归还', async () => {
       await page.click('#navMain .nav-item[data-view="stream"][data-filter="all"]');
-      const opener = page.locator('#cardList .card .card-title').first();
-      await opener.focus();
-      await page.keyboard.press('Enter');
+      // 分批渲染的 IntersectionObserver 可能在聚焦之后重建列表，把焦点元素摘掉，
+      // 于是 Enter 打不开详情。重试几次，聚焦成功再按。
+      let opened = false;
+      for (let i = 0; i < 3 && !opened; i++) {
+        await page.locator('#cardList .card .card-title').first().focus();
+        await page.keyboard.press('Enter');
+        opened = await page.isVisible('#detailDrawer');
+        if (!opened) await page.waitForTimeout(150);
+      }
+      assert(opened, '按 Enter 应打开详情抽屉');
       await page.waitForSelector('#detailDrawer:not([hidden])');
       // 连续 Tab 20 次，焦点不应跑到弹层外
       let escaped = false;
@@ -475,6 +482,133 @@ async function waitServer(url, timeoutMs = 15000) {
       await page.waitForSelector('#batchBar[hidden]', { state: 'attached', timeout: 4000 });
       const picks = await page.locator('#cardList .card-pick').count();
       assert(picks === 0, '退出批量后不应残留选择框');
+    });
+
+    await check('大模型回答边生成边显示（流式）', async () => {
+      // 用假 fetch 顶掉真实网络：验证的是「分片到达 → 增量渲染」这条链路，
+      // 不依赖任何 API Key，也就不会因为网络抖动而假失败。
+      await page.evaluate(() => {
+        window.__origFetch = window.fetch;
+        Store.config.apiKey = 'sk-e2e';
+        Store.config.baseUrl = 'https://example.invalid/v1';
+        Store.config.model = 'e2e-model';
+        Store.saveConfig();
+        const enc = new TextEncoder();
+        const chunks = [
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: '## 结论\n' } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: '你最近在推进 Q4 路线图。' } }] }) + '\n\n',
+          'data: [DONE]\n\n'
+        ];
+        window.fetch = () => Promise.resolve(new Response(new ReadableStream({
+          start(c) {
+            let i = 0;
+            const push = () => {
+              if (i >= chunks.length) { c.close(); return; }
+              c.enqueue(enc.encode(chunks[i++]));
+              setTimeout(push, 120);   // 拉开间隔，保证能看到"只出了一部分"的中间态
+            };
+            push();
+          }
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+      });
+
+      await page.click('#navMain .nav-item[data-view="chat"]');
+      await page.fill('#chatInput', '我在推进什么');
+      await page.click('#btnAsk');
+
+      await page.waitForSelector('#chatLog .stream-caret', { timeout: 5000 });
+      const partial = await page.textContent('#chatLog .msg.ai:last-child');
+      assert(/结论/.test(partial), '第一段应先渲染出来：' + partial);
+      assert(!/Q4 路线图/.test(partial), '此时第二段还没到，不该提前显示');
+
+      await page.waitForFunction(() => !document.querySelector('#chatLog .stream-caret'), null, { timeout: 8000 });
+      const full = await page.textContent('#chatLog .msg.ai:last-child');
+      assert(/Q4 路线图/.test(full), '完整回答应渲染：' + full);
+
+      await page.evaluate(() => {
+        window.fetch = window.__origFetch;
+        Store.config.apiKey = '';
+        Store.saveConfig();
+      });
+    });
+
+    await check('到期通知默认关闭，开启后只弹一次', async () => {
+      const off = await page.evaluate(() => !!Store.config.notifyDue);
+      assert(off === false, '默认必须是关闭的');
+
+      // 无头浏览器里看不到真实系统通知，用假的 Notification 记录调用
+      await page.evaluate(() => {
+        window.__notified = [];
+        function Fake(title, opts) { window.__notified.push({ title: title, body: (opts && opts.body) || '' }); }
+        Fake.permission = 'granted';
+        Fake.requestPermission = function () { return Promise.resolve('granted'); };
+        window.Notification = Fake;
+      });
+
+      await page.evaluate(() => {
+        const d = new Date(Date.now() - 3 * 86400000);
+        const due = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        window.__e2eOverdue = Store.add({ type: 'todo', title: '交季度复盘', content: '交季度复盘', dueDate: due });
+        Store.saveNotes();
+      });
+
+      const whileOff = await page.evaluate(() => window.__infoButler.notifyDue(false));
+      assert(whileOff === false, '开关关着时不该发通知');
+
+      const first = await page.evaluate(() => {
+        Store.config.notifyDue = true;
+        Store.saveConfig();
+        return window.__infoButler.notifyDue(false);
+      });
+      assert(first === true, '开启且已授权时应发出通知');
+      const got = await page.evaluate(() => window.__notified.slice());
+      assert(got.length === 1 && /逾期/.test(got[0].title), '通知应说明逾期：' + JSON.stringify(got));
+      assert(/交季度复盘/.test(got[0].body), '正文应包含待办标题：' + got[0].body);
+
+      const again = await page.evaluate(() => window.__infoButler.notifyDue(false));
+      assert(again === false, '同一天不该重复提醒');
+
+      // 收尾：删掉造出来的逾期项，避免影响后面的列表断言
+      await page.evaluate(() => {
+        Store.remove(window.__e2eOverdue.id);
+        Store.emptyTrash();
+        Store.config.notifyDue = false;
+        Store.saveConfig();
+        window.__infoButler.renderAll();
+      });
+    });
+
+    await check('命令面板能搜记录，并把关键词记成最近搜索', async () => {
+      await page.evaluate(() => Store.clearQueries());
+
+      await page.click('#btnPalette');
+      await page.fill('#paletteInput', 'Q4');
+      await page.waitForSelector('#paletteList .palette-item', { timeout: 4000 });
+      const labels = await page.textContent('#paletteList');
+      assert(/在列表里搜索「Q4」/.test(labels), '关键词应能一键落到列表：' + labels.slice(0, 120));
+
+      await page.click('#paletteList .palette-item:has-text("在列表里搜索")');
+      await page.waitForSelector('#palette[hidden]', { state: 'attached', timeout: 4000 });
+      // 面板的 run 是下一帧执行的，不能读完 hidden 就立刻断言列表状态
+      await page.waitForFunction(
+        () => /匹配「Q4」/.test(document.querySelector('#streamSub').textContent),
+        null, { timeout: 4000 }
+      );
+      const sub = await page.textContent('#streamSub');
+      assert(/匹配「Q4」/.test(sub), '列表应进入搜索结果：' + sub);
+
+      await page.click('#btnPalette');
+      await page.waitForFunction(
+        () => /最近搜索/.test(document.querySelector('#paletteList').textContent),
+        null, { timeout: 4000 }
+      );
+      const recent = await page.textContent('#paletteList');
+      assert(/最近搜索/.test(recent) && recent.includes('Q4'), '空输入时应回显最近搜索：' + recent.slice(0, 120));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#palette[hidden]', { state: 'attached', timeout: 4000 });
+
+      const kept = await page.evaluate(() => Store.recentQueries());
+      assert(kept.includes('Q4'), '查询应写进历史：' + JSON.stringify(kept));
     });
 
     if (WANT_SHOTS) {

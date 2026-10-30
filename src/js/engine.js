@@ -951,6 +951,45 @@
     return { overdue: overdue, today: todayList, soon: soon };
   }
 
+  /**
+   * 把到期分桶压成一条通知文案。
+   * 首页提醒条只在打开应用时有用，用户一天不开就一天不知道；
+   * 系统通知是唯一能把「今天有东西到期」推到应用之外的手段。
+   *
+   * 优先级：逾期 > 今天 > 本周，只报最紧急的一档，避免一条通知里塞三件事。
+   * @returns {{title:string, body:string, level:string}|null} 没有到期项返回 null
+   */
+  function dueDigest(buckets) {
+    var b = buckets || {};
+    var overdue = b.overdue || [];
+    var today = b.today || [];
+    var soon = b.soon || [];
+
+    var level, list, title;
+    if (overdue.length) {
+      level = 'overdue'; list = overdue;
+      title = '有 ' + overdue.length + ' 项待办已逾期';
+    } else if (today.length) {
+      level = 'today'; list = today;
+      title = '今天有 ' + today.length + ' 项待办到期';
+    } else if (soon.length) {
+      level = 'soon'; list = soon;
+      title = '本周还有 ' + soon.length + ' 项待办';
+    } else {
+      return null;
+    }
+
+    // 只列前 3 条：系统通知的正文区很小，超过就被折叠，反而看不到重点
+    var lines = list.slice(0, 3).map(function (n) {
+      var t = String(n.title || n.content || '未命名').replace(/\s+/g, ' ').trim();
+      if (t.length > 24) t = t.slice(0, 24) + '…';
+      return '· ' + t + (n.dueDate ? '（' + n.dueDate + '）' : '');
+    });
+    if (list.length > 3) lines.push('…等 ' + list.length + ' 项');
+
+    return { title: title, body: lines.join('\n'), level: level };
+  }
+
   /** 生成阶段总结（Markdown） */
   function buildSummary(rangeNotes, allNotes, days) {
     var st = stats(rangeNotes, allNotes);
@@ -1187,6 +1226,7 @@
     buildSummary: buildSummary,
     offlineAnswer: offlineAnswer,
     todayStr: todayStr,
-    dueBuckets: dueBuckets
+    dueBuckets: dueBuckets,
+    dueDigest: dueDigest
   };
 })(window);
