@@ -35,10 +35,27 @@
     return m ? m[1].toLowerCase() : '';
   }
 
+  /** 越界/畸形数字实体（如 &#x110000;、&#99999999;）会让 fromCodePoint 抛
+   *  RangeError 从而中断整篇导入；这里收敛成原样保留，坏实体不至于毁掉全文。 */
+  function codePointOrRaw(raw, cp) {
+    try {
+      if (!isFinite(cp) || cp < 0 || cp > 0x10FFFF) return raw;
+      return String.fromCodePoint(cp);
+    } catch (e) { return raw; }
+  }
   function decodeEntities(s) {
     return String(s || '')
-      .replace(/&#x([0-9a-f]+);/gi, function (_, h) { return String.fromCodePoint(parseInt(h, 16)); })
-      .replace(/&#(\d+);/g, function (_, d) { return String.fromCodePoint(parseInt(d, 10)); })
+      // 带分号的标准写法优先处理，避免被下面缺分号的宽松规则误拆。
+      .replace(/&#x([0-9a-f]+);/gi, function (raw, h) { return codePointOrRaw(raw, parseInt(h, 16)); })
+      .replace(/&#(\d+);/g, function (raw, d) { return codePointOrRaw(raw, parseInt(d, 10)); })
+      // HTML5 容错：很多网页/PDF 导出的文本里实体会漏掉结尾分号（&#x4F60）。
+      // 只在后面不是字母数字时才解码，避免把 &#123abc 这类标识符误伤。
+      .replace(/&#x([0-9a-f]+)(?![0-9a-z;])/gi, function (raw, h) {
+        return codePointOrRaw(raw, parseInt(h, 16));
+      })
+      .replace(/&#(\d+)(?![0-9;])/g, function (raw, d) {
+        return codePointOrRaw(raw, parseInt(d, 10));
+      })
       .replace(/&nbsp;/gi, ' ')
       .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"')
       .replace(/&apos;/gi, "'").replace(/&amp;/gi, '&');
@@ -292,10 +309,16 @@
       if (inQ) {
         if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQ = false; }
         else cell += c;
-      } else if (c === '"') inQ = true;
+      // 只有「单元格开头」的 " 才是引号。旧实现见到任何 " 都进入引用态，
+      // 像 尺寸 12" 屏 这类正文会丢掉引号，并且后面的逗号/换行都被当成
+      // 引用内容吞掉，整表列数和行数一起错乱。
+      } else if (c === '"' && cell === '') inQ = true;
       else if (c === delim) { row.push(cell); cell = ''; }
       else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
-      else if (c === '\r') { /* skip */ }
+      else if (c === '\r') {
+        // CRLF 里的 \r 由后面的 \n 收尾；老式 Mac 的裸 \r 单独算一行。
+        if (text[i + 1] !== '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      }
       else cell += c;
     }
     if (cell !== '' || row.length) { row.push(cell); rows.push(row); }

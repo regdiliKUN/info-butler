@@ -17,10 +17,6 @@
   var KEY_TRASH = 'info_butler_trash_v1';
   var KEY_CONF = 'info_butler_config_v1';
   var KEY_META = 'info_butler_meta_v1';
-  var KEY_NOTIFY = 'info_butler_notify_v1';
-  var KEY_RECENT = 'info_butler_recent_q_v1';
-
-  var RECENT_MAX = 8;                                       // 最近搜索最多留 8 条
 
   var SCHEMA_VERSION = 2;
 
@@ -34,8 +30,7 @@
     autoTag: true,
     theme: 'auto',        // auto | dark | light
     density: 'cozy',      // cozy | compact
-    fontSize: 14,
-    notifyDue: false      // 到期系统通知：默认关闭，需要用户显式开启并授权
+    fontSize: 14
   };
 
   var PROVIDERS = {
@@ -90,8 +85,24 @@
     return h.toString(36) + ':' + s.length.toString(36);
   }
 
+  /** 标题必须是单行：AI 或导入数据里混入换行会破坏 Markdown 导出的
+   *  ### 结构，也会让列表卡片高度突然撑开。压平成空格并收敛空白。 */
+  function oneLineTitle(v) {
+    return String(v == null ? '' : v).replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 200);
+  }
+
   function deepClone(v) {
     return JSON.parse(JSON.stringify(v));
+  }
+
+  /** 严格的 YYYY-MM-DD 校验：正则只能保证形状，2026-13-99 也能过关。
+   *  这里回读 Date 各字段，确保月/日真实存在于该年（含闰年）。 */
+  function validDate(v) {
+    if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    var y = +v.slice(0, 4), mo = +v.slice(5, 7), d = +v.slice(8, 10);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    var dt = new Date(y, mo - 1, d);
+    return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
   }
 
   var Store = {
@@ -101,6 +112,7 @@
     onError: null,         // 写入失败等错误的通知回调，由界面层注册
     onQuotaWarn: null,     // 容量接近上限时的提醒回调
     _undo: [],             // 内存撤销栈（不落盘）
+    _quotaWarnedAt: 0,     // 上次容量提醒时间，用于冷却去重
 
     /* ---------- 载入 / 保存 ---------- */
     load: function () {
@@ -178,46 +190,6 @@
       }
     },
 
-    /**
-     * 到期通知的去重状态。
-     * 存在独立 key 里而不是配置里：它属于「运行时痕迹」，不该跟着备份导出到另一台机器，
-     * 否则换机导入后第一天就收不到提醒。
-     */
-    notifyState: function () {
-      return safeParse(localStorage.getItem(KEY_NOTIFY), {}) || {};
-    },
-
-    markNotified: function (date, sig) {
-      try {
-        localStorage.setItem(KEY_NOTIFY, JSON.stringify({ date: date, sig: sig || '', at: Date.now() }));
-      } catch (e) { /* 写不进去顶多重复提醒一次，不值得打断用户 */ }
-    },
-
-    /**
-     * 最近搜索。
-     * 独立 key、独立生命周期：不进备份、不占配额预算，清掉也只是少了几个快捷入口。
-     * 单字查询（"我""a"）没有复用价值，直接丢弃，否则历史会被噪声填满。
-     */
-    recentQueries: function () {
-      var v = safeParse(localStorage.getItem(KEY_RECENT), []);
-      if (!Array.isArray(v)) return [];
-      return v.filter(function (s) { return typeof s === 'string' && s.trim(); }).slice(0, RECENT_MAX);
-    },
-
-    pushQuery: function (q) {
-      var s = String(q == null ? '' : q).replace(/\s+/g, ' ').trim();
-      if (s.length < 2) return this.recentQueries();
-      var list = this.recentQueries().filter(function (x) { return x !== s; });
-      list.unshift(s.slice(0, 60));
-      list = list.slice(0, RECENT_MAX);
-      try { localStorage.setItem(KEY_RECENT, JSON.stringify(list)); } catch (e) { /* 配额满不影响搜索本身 */ }
-      return list;
-    },
-
-    clearQueries: function () {
-      try { localStorage.removeItem(KEY_RECENT); } catch (e) { /* ignore */ }
-    },
-
     /** 估算当前占用（字节），用于设置页展示与提前预警 */
     estimateBytes: function () {
       var total = 0;
@@ -231,9 +203,18 @@
       return total * 2;
     },
 
+    /**
+     * 容量预警。超过软上限后每次 saveNotes 都会调用这里；旧实现每写一次就
+     * 弹一条提示，用户批量操作时会被同一句话连续打断。改成 5 分钟冷却，
+     * 占用回落到阈值以下时重置，保证「刚超线」和「继续恶化」仍然会提醒。
+     */
     _checkQuota: function () {
       var used = this.estimateBytes();
-      if (used > QUOTA_SOFT && this.onQuotaWarn) {
+      if (used <= QUOTA_SOFT) { this._quotaWarnedAt = 0; return; }
+      var now = Date.now();
+      if (this._quotaWarnedAt && now - this._quotaWarnedAt < 5 * 60000) return;
+      this._quotaWarnedAt = now;
+      if (this.onQuotaWarn) {
         this.onQuotaWarn('本地存储已用 ' + (used / 1048576).toFixed(1) + ' MB，接近浏览器上限。建议导出备份并清理旧记录。');
       }
     },
@@ -276,12 +257,12 @@
       return n || null;
     },
 
-    add: function (data) {
+    add: function (data, opts) {
       var now = Date.now();
       var note = {
         id: uid(),
         type: data.type || 'idea',
-        title: data.title || '',
+        title: oneLineTitle(data.title),
         content: (typeof data.content === 'string' && data.content.length > MAX_CONTENT)
           ? data.content.slice(0, MAX_CONTENT)
           : (data.content || ''),
@@ -300,10 +281,10 @@
       };
       note.fingerprint = fingerprint(note);
       if (note.done && !note.doneAt) note.doneAt = now;
-      this.snapshot();
+      if (!opts || opts.snapshot !== false) this.snapshot();
       this.notes.unshift(note);
       this._index = null;
-      this.saveNotes();
+      if (!opts || opts.persist !== false) this.saveNotes();
       return note;
     },
 
@@ -312,7 +293,8 @@
       if (!n) return null;
       if (!opts || opts.snapshot !== false) this.snapshot();
       Object.keys(patch).forEach(function (k) { n[k] = patch[k]; });
-      // 与 add 一致：防止超长正文把 localStorage 撑爆（导入路径已在 sanitize 截断）
+      // 与 add 一致：标题单行 + 正文限长，避免脏 patch 破坏导出结构或撑爆配额。
+      if (patch.title != null) n.title = oneLineTitle(patch.title);
       if (n.content && n.content.length > MAX_CONTENT) n.content = n.content.slice(0, MAX_CONTENT);
       if (patch.content != null || patch.type != null) n.fingerprint = fingerprint(n);
       n.updatedAt = Date.now();
@@ -352,7 +334,12 @@
       var t = safeParse(localStorage.getItem(KEY_TRASH), []);
       if (!Array.isArray(t)) return [];
       var cutoff = Date.now() - TRASH_DAYS * 86400000;
-      return t.filter(function (n) { return n && n.deletedAt && n.deletedAt >= cutoff; }).slice(0, TRASH_MAX);
+      var kept = t.filter(function (n) { return n && n.deletedAt && n.deletedAt >= cutoff; })
+                  .slice(0, TRASH_MAX);
+      // 过期项之前只是「读不到」，从没真正从 localStorage 删除：配额照样被占。
+      // 这里顺手写回（仅在确实清掉东西时），让过期项真正释放空间。
+      if (kept.length !== t.length) this._writeTrash(kept);
+      return kept;
     },
 
     _writeTrash: function (list) {
@@ -433,8 +420,13 @@
       var self = this;
       targets.forEach(function (n) {
         var p = typeof patch === 'function' ? patch(n) : patch;
+        var touchedFp = !!(p && (p.content != null || p.type != null));
         Object.keys(p || {}).forEach(function (k) { n[k] = p[k]; });
+        if (p && p.title != null) n.title = oneLineTitle(p.title);
         if (n.content && n.content.length > MAX_CONTENT) n.content = n.content.slice(0, MAX_CONTENT);
+        // 与单条 update() 保持一致：类型/正文变了必须重算指纹，
+        // 否则批量「标为待办」后导入备份时去重会按旧类型判定。
+        if (touchedFp) n.fingerprint = fingerprint(n);
         n.updatedAt = now;
         if (p && p.done === true && !n.doneAt) n.doneAt = now;
         if (p && p.done === false) n.doneAt = null;
@@ -512,8 +504,10 @@
       var dst = String(to || '').trim().slice(0, 16);
       if (!src || !dst || src === dst) return 0;
 
-      var n = 0;
-      this.snapshot();
+      var changes = [], now = Date.now();
+      // 先把要改的结果算出来，确认真的有变化才快照。旧实现无条件 snapshot()，
+      // 用户输入一个不存在的标签也会压栈，随后点「撤销」退回一份完全相同的
+      // 状态，看起来像撤销失灵，还会把真正想撤销的那一步顶掉。
       this.notes.forEach(function (note) {
         var tags = note.tags || [];
         if (tags.indexOf(src) < 0) return;
@@ -522,29 +516,38 @@
           var v = (t === src) ? dst : t;
           if (next.indexOf(v) < 0) next.push(v);
         });
-        note.tags = next.slice(0, 8);
-        note.updatedAt = Date.now();
-        n++;
+        next = next.slice(0, 8);
+        if (next.join('\u0000') === tags.join('\u0000')) return; // 合并后无变化
+        changes.push({ note: note, tags: next });
       });
-      if (n) this.saveNotes();
-      return n;
+      if (!changes.length) return 0;
+      this.snapshot();
+      changes.forEach(function (c) {
+        c.note.tags = c.tags;
+        c.note.updatedAt = now;
+      });
+      this.saveNotes();
+      return changes.length;
     },
 
     /** 删除标签（只摘掉标签，不删记录） */
     deleteTag: function (tag) {
       var t = String(tag || '').trim();
       if (!t) return 0;
-      var n = 0;
-      this.snapshot();
+      var changes = [], now = Date.now();
       this.notes.forEach(function (note) {
         var tags = note.tags || [];
         if (tags.indexOf(t) < 0) return;
-        note.tags = tags.filter(function (x) { return x !== t; });
-        note.updatedAt = Date.now();
-        n++;
+        changes.push({ note: note, tags: tags.filter(function (x) { return x !== t; }) });
       });
-      if (n) this.saveNotes();
-      return n;
+      if (!changes.length) return 0;
+      this.snapshot();
+      changes.forEach(function (c) {
+        c.note.tags = c.tags;
+        c.note.updatedAt = now;
+      });
+      this.saveNotes();
+      return changes.length;
     },
 
     /* ---------- 完整性修复 ---------- */
@@ -566,9 +569,16 @@
 
         if (VALID_TYPES.indexOf(n.type) < 0) { n.type = 'idea'; changed++; }
         if (VALID_PRIO.indexOf(n.priority) < 0) { n.priority = 'medium'; changed++; }
+        // 与 sanitize 用同一套日期规则：脏数据里非 YYYY-MM-DD 的 dueDate
+        // 会污染导出内容，还会让按截止日排序的比较失去意义。
+        if (n.dueDate != null && !validDate(n.dueDate)) {
+          n.dueDate = null; changed++;
+        }
         if (!Array.isArray(n.tags)) { n.tags = []; changed++; }
         if (!Array.isArray(n.keyPoints)) { n.keyPoints = []; changed++; }
         if (!Array.isArray(n.related)) { n.related = []; changed++; }
+        var flatTitle = oneLineTitle(n.title);
+        if (flatTitle !== n.title) { n.title = flatTitle; changed++; }
         if (!n.title) { n.title = fallbackTitle(n.content); changed++; }
         if (n.content.length > MAX_CONTENT) { n.content = n.content.slice(0, MAX_CONTENT); changed++; }
         if (!n.fingerprint) { n.fingerprint = fingerprint(n); changed++; }
@@ -644,6 +654,17 @@
             out.push('> ' + meta.join('　|　'));
             out.push('');
           }
+          // AI 提炼的摘要与要点是这条记录最有价值的结构化信息，
+          // 旧导出只写正文，用户备份后要点全部丢失。
+          if (n.summary) {
+            out.push('**摘要**：' + n.summary);
+            out.push('');
+          }
+          if ((n.keyPoints || []).length) {
+            out.push('**要点**：');
+            n.keyPoints.forEach(function (k) { out.push('- ' + k); });
+            out.push('');
+          }
           out.push(n.content || '');
           out.push('');
         });
@@ -658,6 +679,11 @@
       var TYPE_CN = { idea: '想法', material: '资料', todo: '待办', summary: '阶段总结' };
       var esc = function (v) {
         var s = String(v == null ? '' : v);
+        // CSV 注入防护：单元格以 = + - @ 或控制字符开头时，Excel/WPS 会当公式执行。
+        // 前导空格/制表符也要先剥掉再判断：'  =cmd' 这类内容部分电子表格
+        // 会忽略空白后照样当公式解析，只查首字符会漏掉。
+        // 本地记录内容用户可控，导出后可能在别的机器上打开，必须前置单引号中和。
+        if (/^[\s\u00a0]*[=+\-@]/.test(s)) s = "'" + s;
         return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
       };
       var rows = [['类型', '标题', '正文', '标签', '优先级', '截止日期', '完成', '创建时间']];
@@ -687,7 +713,7 @@
       if (!content.trim()) return null;
 
       var now = Date.now();
-      var title = typeof n.title === 'string' ? n.title.slice(0, 200) : '';
+      var title = oneLineTitle(n.title);
       var createdAt = (typeof n.createdAt === 'number' && isFinite(n.createdAt)) ? n.createdAt : now;
       var clean = {
         id: (typeof n.id === 'string' && n.id) ? n.id : uid(),
@@ -698,7 +724,7 @@
           .map(function (t) { return typeof t === 'string' ? t.trim().slice(0, 16) : ''; })
           .filter(Boolean).slice(0, 8),
         priority: VALID_PRIO.indexOf(n.priority) >= 0 ? n.priority : 'medium',
-        dueDate: (typeof n.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(n.dueDate)) ? n.dueDate : null,
+        dueDate: validDate(n.dueDate) ? n.dueDate : null,
         done: !!n.done,
         doneAt: (typeof n.doneAt === 'number' && isFinite(n.doneAt)) ? n.doneAt : null,
         pinned: !!n.pinned,
@@ -801,12 +827,16 @@
         }
       ];
       var self = this;
+      // 一次性事务：只在开头做 1 份快照、结尾写 1 次盘。
+      // 原实现 add() 每条都会 snapshot()+saveNotes()，8 条示例 = 9 份快照 +
+      // 9 次全量 JSON.stringify，记录多时是明显的卡顿点。
       this.snapshot();
       demo.forEach(function (d) {
-        var n = self.add(d);
-        n.title = Engine.makeTitle(d.content);
-        n.summary = Engine.extractiveSummary(d.content, 1);
-        n.keyPoints = Engine.keyPoints(d.content, 2);
+        var n = self.add(Object.assign({}, d, {
+          title: Engine.makeTitle(d.content),
+          summary: Engine.extractiveSummary(d.content, 1),
+          keyPoints: Engine.keyPoints(d.content, 2)
+        }), { snapshot: false, persist: false });
       });
       this.saveNotes();
       return demo.length;

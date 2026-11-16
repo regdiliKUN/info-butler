@@ -216,7 +216,13 @@
       var n = notes[i];
       var u = n.updatedAt || n.createdAt || 0;
       if (u > last) last = u;
-      var s = (n.id || '') + ':' + u + ':' + ((n.content || '').length) + ':' + ((n.title || '').length);
+      // 旧签名只取正文/标题的「长度」。导入外部备份时，updatedAt 相同、
+      // 长度相同的同长度改写（如把「产品」换成「运营」）不会改变签名，
+      // 于是整个索引继续复用旧向量，搜索命中的是被改掉之前的内容。
+      // 这里把真正参与向量化的字段全部纳入哈希：成本 O(总字符数)，
+      // 仍远低于重建索引的 O(记录数 × 词数)。
+      var s = (n.id || '') + ':' + u + ':' + (n.type || '') + ':' + (n.priority || '') + ':' +
+        (n.title || '') + '\u0001' + (n.content || '') + '\u0001' + (n.tags || []).join('\u0002');
       for (var j = 0; j < s.length; j++) {
         h ^= s.charCodeAt(j);
         h = (h * 0x01000193) >>> 0;
@@ -370,6 +376,14 @@
       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     }
 
+    /** 按自然日加 N 天。不能用 getTime()+N*86400000：有夏令时的时区一天
+     *  不一定是 24 小时，固定毫秒会把「后天」算到相邻日期上去。 */
+    function addDays(base, n) {
+      var d = new Date(base.getTime());
+      d.setDate(d.getDate() + n);
+      return d;
+    }
+
     // Date 会把 2026-13-45 静默溢出成 2027-02-14，必须回读校验，避免解析出错误日期
     function mkDate(y, mo, d) {
       if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
@@ -382,9 +396,12 @@
       var d1 = mkDate(+m[1], +m[2], +m[3]);
       if (d1) return fmt(d1);
     }
+    // 「大后天」必须先于「后天」判断：它包含「后天」子串，
+    // 旧顺序会让 /后天/ 先命中，把 +3 天错算成 +2 天。
+    if (/大后天/.test(s)) return fmt(addDays(today, 3));
     if (/今天/.test(s)) return fmt(today);
-    if (/明天/.test(s)) return fmt(new Date(today.getTime() + 86400000));
-    if (/后天/.test(s)) return fmt(new Date(today.getTime() + 2 * 86400000));
+    if (/明天/.test(s)) return fmt(addDays(today, 1));
+    if (/后天/.test(s)) return fmt(addDays(today, 2));
     if ((m = s.match(/(\d{1,2})月(\d{1,2})[日号]/))) {
       var y = today.getFullYear();
       var d = mkDate(y, +m[1], +m[2]);
@@ -397,13 +414,23 @@
     }
     if ((m = s.match(/(下?)\s*(?:周|星期)([一二三四五六日天])/))) {
       var target = WEEK_MAP[m[2]];
-      var cur = today.getDay();
-      var delta = (target - cur + 7) % 7;
-      if (delta === 0) delta = 7;
-      if (m[1] === '下') delta += 7;
-      return fmt(new Date(today.getTime() + delta * 86400000));
+      var cur = today.getDay();                       // 0=周日
+      var dow = (cur + 6) % 7;                        // 0=周一 … 6=周日
+      var targetIdx = (target + 6) % 7;               // 目标在本周内的序号（周一起算）
+      var delta;
+      if (m[1] === '下') {
+        // 「下周三」= 下一个自然周（周一起算）的周三。
+        // 旧实现先求「最近一次周三」再 +7：今天周三会算成 14 天后，
+        // 今天周日会算成 8 天后（正确应是明天），双重计数。
+        delta = (7 - dow) + targetIdx;
+      } else {
+        // 不带「下」= 最近一次该星期几；今天正好是该日则取 7 天后。
+        delta = (target - cur + 7) % 7;
+        if (delta === 0) delta = 7;
+      }
+      return fmt(addDays(today, delta));
     }
-    if ((m = s.match(/(\d+)\s*天内/))) return fmt(new Date(today.getTime() + (+m[1]) * 86400000));
+    if ((m = s.match(/(\d+)\s*天内/))) return fmt(addDays(today, +m[1]));
     return null;
   }
 
@@ -455,11 +482,14 @@
     });
   }
 
-  /** 从一段文本中识别可执行行动项 */
+  /** 从一段文本中识别可执行行动项。
+   *  早期这里误用了未定义的 TODO_SIGNAL，本地整理待办一调用就抛
+   *  ReferenceError；改为复用分类已使用的强/弱动作信号词。 */
+  var ACTION_SIGNALS = TODO_STRONG.concat(TODO_WEAK);
   function actionItems(text) {
     return splitSentences(text).filter(function (s) {
       if (s.length < 6 || s.length > 90) return false;
-      return TODO_SIGNAL.some(function (w) { return s.indexOf(w) >= 0; });
+      return ACTION_SIGNALS.some(function (w) { return s.indexOf(w) >= 0; });
     }).slice(0, 5);
   }
 
@@ -928,7 +958,11 @@
   function dueBuckets(notes, nowMs) {
     var now = nowMs || Date.now();
     var today = todayStr(now);
-    var weekLater = todayStr(now + 7 * DAY_MS);
+    // 用 setDate 按自然日推进，而非 now + 7*86400000：
+    // 夏令时切换那一周一天不是 24 小时，固定毫秒会让「未来 7 天」窗口偏一天。
+    var weekDate = new Date(now);
+    weekDate.setDate(weekDate.getDate() + 7);
+    var weekLater = todayStr(weekDate.getTime());
     var overdue = [], todayList = [], soon = [];
 
     notes.forEach(function (n) {
@@ -949,45 +983,6 @@
     soon.sort(byDue);
 
     return { overdue: overdue, today: todayList, soon: soon };
-  }
-
-  /**
-   * 把到期分桶压成一条通知文案。
-   * 首页提醒条只在打开应用时有用，用户一天不开就一天不知道；
-   * 系统通知是唯一能把「今天有东西到期」推到应用之外的手段。
-   *
-   * 优先级：逾期 > 今天 > 本周，只报最紧急的一档，避免一条通知里塞三件事。
-   * @returns {{title:string, body:string, level:string}|null} 没有到期项返回 null
-   */
-  function dueDigest(buckets) {
-    var b = buckets || {};
-    var overdue = b.overdue || [];
-    var today = b.today || [];
-    var soon = b.soon || [];
-
-    var level, list, title;
-    if (overdue.length) {
-      level = 'overdue'; list = overdue;
-      title = '有 ' + overdue.length + ' 项待办已逾期';
-    } else if (today.length) {
-      level = 'today'; list = today;
-      title = '今天有 ' + today.length + ' 项待办到期';
-    } else if (soon.length) {
-      level = 'soon'; list = soon;
-      title = '本周还有 ' + soon.length + ' 项待办';
-    } else {
-      return null;
-    }
-
-    // 只列前 3 条：系统通知的正文区很小，超过就被折叠，反而看不到重点
-    var lines = list.slice(0, 3).map(function (n) {
-      var t = String(n.title || n.content || '未命名').replace(/\s+/g, ' ').trim();
-      if (t.length > 24) t = t.slice(0, 24) + '…';
-      return '· ' + t + (n.dueDate ? '（' + n.dueDate + '）' : '');
-    });
-    if (list.length > 3) lines.push('…等 ' + list.length + ' 项');
-
-    return { title: title, body: lines.join('\n'), level: level };
   }
 
   /** 生成阶段总结（Markdown） */
@@ -1226,7 +1221,6 @@
     buildSummary: buildSummary,
     offlineAnswer: offlineAnswer,
     todayStr: todayStr,
-    dueBuckets: dueBuckets,
-    dueDigest: dueDigest
+    dueBuckets: dueBuckets
   };
 })(window);

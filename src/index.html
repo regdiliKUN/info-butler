@@ -284,7 +284,7 @@
           以及 json 备份。
           编码自动识别 UTF-8 / GBK / UTF-16；扩展名写错也能按内容识别（例如把 docx 存成了 .doc）。
           扫描件（整页是图片）没有文字层，无法提取。</p>
-          <p class="hint" id="buildStamp" style="margin-top:8px">版本 v1.0.0 · 构建 2026-10-22 18:21 UTC</p>
+          <p class="hint" id="buildStamp" style="margin-top:8px">版本 v1.2.0 · 构建 2026-10-29 18:30 UTC</p>
           <div class="form-row inline">
             <button class="ghost-btn" id="btnSeed">载入示例数据</button>
           </div>
@@ -330,14 +330,6 @@
               <span>记录时自动分类与打标签</span>
             </label>
           </div>
-          <div class="form-row inline">
-            <label class="switch">
-              <input type="checkbox" id="cfgNotifyDue" />
-              <span>待办到期时发系统通知</span>
-            </label>
-            <button class="ghost-btn" id="btnTestNotify">发一条测试通知</button>
-          </div>
-          <p class="hint small" id="notifyHint">默认关闭。开启后每天最多提醒一次，只报最紧急的一档（逾期 &gt; 今天 &gt; 本周）。首次开启需要浏览器授权，通知只在本机弹出，不联网。</p>
           <div class="form-row">
             <label>主题</label>
             <select id="cfgTheme" class="select wide">
